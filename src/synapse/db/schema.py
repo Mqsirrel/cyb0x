@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS targets (
     hostname TEXT DEFAULT '',
     os TEXT DEFAULT 'Unknown',
     status TEXT DEFAULT 'discovered',
+    in_scope INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     notes TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -45,6 +46,9 @@ CREATE TABLE IF NOT EXISTS checklists (
     description TEXT DEFAULT '',
     command_template TEXT DEFAULT '',
     status TEXT DEFAULT 'todo',
+    severity TEXT DEFAULT 'info',
+    remediation TEXT DEFAULT '',
+    cve_refs TEXT DEFAULT '[]',
     output_snippet TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -57,6 +61,7 @@ CREATE TABLE IF NOT EXISTS leads (
     title TEXT NOT NULL,
     description TEXT DEFAULT '',
     priority TEXT DEFAULT 'medium',
+    severity TEXT DEFAULT 'info',
     status TEXT DEFAULT 'backlog',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -89,6 +94,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     flag_hash TEXT DEFAULT '',
     screenshot_path TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE,
     FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
 );

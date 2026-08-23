@@ -12,6 +12,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class SeverityLevel(str, Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+
 class TargetStatus(str, Enum):
     DISCOVERED = "discovered"
     SCANNING = "scanning"
@@ -79,6 +87,9 @@ class ChecklistItem(BaseModel):
     description: str = ""
     command_template: str = ""
     status: ChecklistStatus = ChecklistStatus.TODO
+    severity: SeverityLevel = SeverityLevel.INFO
+    remediation: str = ""
+    cve_refs: List[str] = Field(default_factory=list)
     output_snippet: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -106,6 +117,7 @@ class Target(BaseModel):
     hostname: str = ""
     os: str = "Unknown"
     status: TargetStatus = TargetStatus.DISCOVERED
+    in_scope: bool = True
     tags: List[str] = Field(default_factory=list)
     notes: str = ""
     services: List[Service] = Field(default_factory=list)
@@ -120,6 +132,7 @@ class Lead(BaseModel):
     title: str
     description: str = ""
     priority: LeadPriority = LeadPriority.MEDIUM
+    severity: SeverityLevel = SeverityLevel.INFO
     status: LeadStatus = LeadStatus.BACKLOG
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
@@ -152,6 +165,7 @@ class Evidence(BaseModel):
     flag_hash: str = ""
     screenshot_path: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
 
 class PivotRoute(BaseModel):

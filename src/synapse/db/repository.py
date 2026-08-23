@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
+from synapse.db.migrations import run_migrations
 from synapse.db.schema import SCHEMA_SQL
 from synapse.models import (
     ChecklistItem,
@@ -22,6 +23,7 @@ from synapse.models import (
     ProofType,
     Service,
     ServiceStatus,
+    SeverityLevel,
     Target,
     TargetStatus,
 )
@@ -51,11 +53,14 @@ class DatabaseRepository:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("PRAGMA busy_timeout = 5000;")
         return conn
 
     def _init_db(self) -> None:
         conn = self.get_connection()
         conn.executescript(SCHEMA_SQL)
+        run_migrations(conn)
         conn.commit()
         if self._mem_conn is None:
             conn.close()
@@ -890,6 +895,13 @@ class DatabaseRepository:
 
     @staticmethod
     def _row_to_checklist(row: sqlite3.Row) -> ChecklistItem:
+        cve_refs = []
+        if "cve_refs" in row.keys() and row["cve_refs"]:
+            try:
+                cve_refs = json.loads(row["cve_refs"])
+            except Exception:
+                cve_refs = []
+
         return ChecklistItem(
             id=row["id"],
             service_id=row["service_id"],
@@ -898,6 +910,9 @@ class DatabaseRepository:
             description=row["description"] or "",
             command_template=row["command_template"] or "",
             status=ChecklistStatus(row["status"]),
+            severity=SeverityLevel(row["severity"]) if "severity" in row.keys() and row["severity"] else SeverityLevel.INFO,
+            remediation=row["remediation"] if "remediation" in row.keys() and row["remediation"] else "",
+            cve_refs=cve_refs,
             output_snippet=row["output_snippet"] or "",
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
@@ -912,6 +927,7 @@ class DatabaseRepository:
             title=row["title"],
             description=row["description"] or "",
             priority=LeadPriority(row["priority"]),
+            severity=SeverityLevel(row["severity"]) if "severity" in row.keys() and row["severity"] else SeverityLevel.INFO,
             status=LeadStatus(row["status"]),
             created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
             updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),

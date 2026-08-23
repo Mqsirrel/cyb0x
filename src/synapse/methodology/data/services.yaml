@@ -1,5 +1,5 @@
 # Synapse Pentest Methodology Knowledge Base
-# Comprehensive checklists, command recipes, and attack vectors for 45+ network & web services
+# Comprehensive checklists, command recipes, and attack vectors for 50+ network & web services
 # Tailored for eJPTv2, OSCP, CPTS, CTFs, and real-world penetration tests.
 # Variables available in command_template:
 #   {IP}      - Target IP address or hostname
@@ -41,9 +41,9 @@ services:
         description: "Extract SSH banner, supported authentication methods, and key exchange algorithms"
         command_template: "nmap --script ssh2-enum-algos,ssh-auth-methods -p {PORT} {IP}"
       - category: "enum"
-        title: "SSH User Enumeration (CVE-2018-15473)"
-        description: "Test if OpenSSH version is vulnerable to username timing/enumeration"
-        command_template: "nmap --script ssh-run -p {PORT} {IP}"
+        title: "SSH User Enumeration & Timing"
+        description: "Audit supported authentication schemes and test common usernames"
+        command_template: "nmap --script ssh-auth-methods -p {PORT} {IP}"
       - category: "exploit"
         title: "Credential Spraying & Key Auth Test"
         description: "Test discovered passwords, default credentials, or id_rsa keys against SSH"
@@ -86,7 +86,7 @@ services:
       - category: "enum"
         title: "Subdomain & Reverse IP Brute-Force"
         description: "Enumerate subdomains and PTR records using DNS wordlist"
-        command_template: "dig @{IP} -x {IP} ANY"
+        command_template: "dig @{IP} -x {IP}"
 
   tftp:
     ports: [69]
@@ -156,6 +156,19 @@ services:
         description: "Request TGS service tickets for SPNs using valid domain user credentials to crack offline"
         command_template: "GetUserSPNs.py {DOMAIN}/{USER}:{PASS} -dc-ip {IP} -request -outputfile kerberoast.hashes"
 
+  pop3:
+    ports: [110, 995]
+    name_patterns: ["^pop3", "^pop3s", "dovecot"]
+    checklists:
+      - category: "enum"
+        title: "POP3 Capability and User Enumeration"
+        description: "Query POP3 capabilities and test user authorization"
+        command_template: "nmap --script pop3-capabilities,pop3-ntlm-info -p {PORT} {IP}"
+      - category: "exploit"
+        title: "POP3 Password Brute-force"
+        description: "Spray credentials against POP3 mail accounts"
+        command_template: "hydra -L users.txt -P passwords.txt -s {PORT} pop3://{IP}"
+
   rpc_nfs:
     ports: [111, 2049]
     name_patterns: ["^rpcbind", "^nfs", "^mountd"]
@@ -215,6 +228,15 @@ services:
         description: "Dump password hashes with admin credentials using secretsdump.py"
         command_template: "secretsdump.py {DOMAIN}/{USER}:{PASS}@{IP}"
 
+  imap:
+    ports: [143, 993]
+    name_patterns: ["^imap", "^imaps"]
+    checklists:
+      - category: "enum"
+        title: "IMAP Capabilities & Auth Methods"
+        description: "Query IMAP capabilities and authentication mechanisms"
+        command_template: "nmap --script imap-capabilities,imap-ntlm-info -p {PORT} {IP}"
+
   snmp:
     ports: [161, 162]
     name_patterns: ["^snmp"]
@@ -256,7 +278,7 @@ services:
 
   ldap:
     ports: [389, 636, 3268, 3269]
-    name_patterns: ["^ldap", "^ldaps", "microsoft-ds"]
+    name_patterns: ["^ldap", "^ldaps"]
     checklists:
       - category: "recon"
         title: "Test Anonymous LDAP Bind & Base DN"
@@ -312,7 +334,7 @@ services:
       - category: "exploit"
         title: "Test Default Accounts & Password Hashes"
         description: "Test default credentials (SYS/change_on_install, SYSTEM/manager, SCOTT/tiger)"
-        command_template: "odat passwordguesser -s {IP} -p {PORT} -d {DOMAIN}"
+        command_template: "odat passwordguesser -s {IP} -p {PORT} -d XE"
 
   docker:
     ports: [2375, 2376]
@@ -434,6 +456,33 @@ services:
         title: "Ghostcat (CVE-2020-1938) File Read / RCE"
         description: "Read arbitrary files (WEB-INF/web.xml) or achieve RCE via Apache Tomcat AJP"
         command_template: "python3 ajpShooter.py http://{IP}:{PORT} 8009 /WEB-INF/web.xml read"
+
+  jenkins:
+    ports: [8080]
+    name_patterns: ["jenkins"]
+    checklists:
+      - category: "enum"
+        title: "Jenkins Unauthenticated Script Console & Sign-up"
+        description: "Check /script for unauthenticated Groovy console execution or open signup"
+        command_template: "curl -s -i http://{IP}:{PORT}/script"
+
+  elasticsearch:
+    ports: [9200, 9300]
+    name_patterns: ["^elasticsearch"]
+    checklists:
+      - category: "enum"
+        title: "Dump Elasticsearch Indices & Cluster Health"
+        description: "Query unauthenticated Elasticsearch REST API for exposed indices and logs"
+        command_template: "curl -s http://{IP}:{PORT}/_cat/indices?v"
+
+  mqtt:
+    ports: [1883, 8883]
+    name_patterns: ["^mqtt", "mosquitto"]
+    checklists:
+      - category: "enum"
+        title: "Subscribe to All MQTT Topics (#)"
+        description: "Listen for unauthenticated telemetry and leaked secrets on wildcard topic"
+        command_template: "mosquitto_sub -h {IP} -p {PORT} -t '#' -v"
 
   mongodb:
     ports: [27017]
