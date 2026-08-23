@@ -41,6 +41,13 @@ class ExportModal(ModalScreen[dict]):
     }
     """
 
+    SUGGESTED_PATHS = {
+        "notion": "./notion_workspace",
+        "markdown": "./assessment_report.md",
+        "obsidian": "./obsidian_vault",
+        "json": "./workspace_backup.json",
+    }
+
     def __init__(self, default_output: str = "./notion_workspace", **kwargs):
         super().__init__(**kwargs)
         self.default_output = default_output
@@ -58,6 +65,7 @@ class ExportModal(ModalScreen[dict]):
                 ],
                 value="notion",
                 id="export-format",
+                allow_blank=False,
             )
 
             yield Label("Destination Path / Directory:", classes="field-label")
@@ -66,6 +74,13 @@ class ExportModal(ModalScreen[dict]):
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="default", id="btn-cancel")
                 yield Button("Export Now", variant="success", id="btn-export")
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Swaps the suggested destination path when the format changes."""
+        suggested = self.SUGGESTED_PATHS.get(str(event.value))
+        path_input = self.query_one("#export-path", Input)
+        if suggested and path_input.value in self.SUGGESTED_PATHS.values():
+            path_input.value = suggested
 
     def action_cancel(self) -> None:
         self.dismiss(None)

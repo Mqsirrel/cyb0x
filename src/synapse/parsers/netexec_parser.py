@@ -58,19 +58,24 @@ def parse_netexec_output(content_or_path: Union[str, Path]) -> Dict[str, Any]:
         if not extracted_hostname and name_match:
             extracted_hostname = name_match.group(1)
 
+        # Check domain info in rest: (domain:CORP.LOCAL)
+        domain_match = re.search(r"\(domain:([^\)]+)\)", rest, re.IGNORECASE)
+        domain_name = domain_match.group(1) if domain_match else ""
+
         if ip not in targets_map:
             targets_map[ip] = {
                 "ip": ip,
                 "hostname": extracted_hostname if extracted_hostname != ip else "",
                 "os": "Windows" if proto_name in ("smb", "winrm", "wmi") else "Unknown",
+                "domain": domain_name,
                 "services": [],
             }
         elif extracted_hostname and not targets_map[ip]["hostname"]:
             targets_map[ip]["hostname"] = extracted_hostname
 
-        # Check domain info in rest: (domain:CORP.LOCAL)
-        domain_match = re.search(r"\(domain:([^\)]+)\)", rest, re.IGNORECASE)
-        domain_name = domain_match.group(1) if domain_match else ""
+        # Propagate domain info to the target record if newly discovered
+        if domain_name and not targets_map[ip].get("domain"):
+            targets_map[ip]["domain"] = domain_name
 
         # Check OS info in rest: [*] Windows 10...
         os_match = re.search(r"\[\*\]\s+(Windows[^\(]+)", rest, re.IGNORECASE)

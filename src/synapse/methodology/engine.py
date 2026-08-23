@@ -102,6 +102,18 @@ class MethodologyEngine:
         )
         proto_scheme = "https" if is_ssl else "http"
 
+        # Auto-extract domain if default WORKGROUP was passed
+        resolved_domain = domain
+        if resolved_domain == "WORKGROUP":
+            if service.banner:
+                d_match = re.search(r"\(domain:([^\)]+)\)", service.banner, re.IGNORECASE)
+                if d_match:
+                    resolved_domain = d_match.group(1).upper()
+            if resolved_domain == "WORKGROUP" and target.hostname and "." in target.hostname:
+                parts = target.hostname.split(".", 1)
+                if len(parts) > 1 and parts[1]:
+                    resolved_domain = parts[1].upper()
+
         target_host = target.hostname if target.hostname else target.ip
 
         replacements = {
@@ -111,7 +123,7 @@ class MethodologyEngine:
             "USER": user,
             "PASS": password,
             "HASH": ntlm_hash,
-            "DOMAIN": domain,
+            "DOMAIN": resolved_domain,
             "WORDLIST": wordlist,
             "PRODUCT": service.product or service.name,
             "VERSION": service.version or "",

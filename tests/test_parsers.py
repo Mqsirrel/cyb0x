@@ -178,3 +178,12 @@ def test_parse_netexec_hyphenated_hostname():
     assert res["targets"][0]["hostname"] == "DESKTOP-ABC123"
     assert len(res["credentials"]) == 1
     assert res["credentials"][0]["username"] == "admin"
+
+
+def test_parse_netexec_extracts_domain_per_target():
+    res = parse_netexec_output(SAMPLE_NETEXEC_LOG)
+    targets = {t["ip"]: t for t in res["targets"]}
+    assert targets["10.10.11.100"]["domain"] == "CORP.LOCAL"
+    assert targets["10.10.11.101"]["domain"] == "CORP.LOCAL"
+    # srv01 line has no (domain:...) marker
+    assert targets["10.10.11.102"]["domain"] == ""

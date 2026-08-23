@@ -156,6 +156,29 @@ class SynapseTUI(App):
 
     def on_mount(self) -> None:
         self.refresh_all_views()
+        self.auto_select_first_service()
+
+    def auto_select_first_service(self) -> None:
+        """Populates the methodology checklist with the first discovered service on launch."""
+        detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
+        targets = self.repo.list_targets()
+
+        if not targets:
+            detail_widget.display_empty()
+            return
+
+        first = targets[0]
+        self.selected_target = first
+        if first.services:
+            self.selected_service = first.services[0]
+            detail_widget.display_service(first, first.services[0])
+        else:
+            self.selected_service = None
+            detail_widget.display_empty(f"Target {first.ip} has no open services recorded.")
+
+        tree = self.query_one("#target-tree", TargetTreeWidget)
+        if tree.root.children:
+            tree.root.children[0].expand()
 
     def update_stats_banner(self) -> None:
         stats = self.repo.get_stats()
@@ -194,6 +217,16 @@ class SynapseTUI(App):
         self.query_one("#pivot-view", PivotViewWidget).populate(pivots)
 
         self.update_stats_banner()
+
+        # If nothing is currently selected and targets exist, select the first target and service
+        if not self.selected_target and targets:
+            self.selected_target = targets[0]
+            detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
+            if targets[0].services:
+                self.selected_service = targets[0].services[0]
+                detail_widget.display_service(targets[0], targets[0].services[0])
+            else:
+                detail_widget.display_empty(f"Target {targets[0].ip} has no open services recorded.")
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         node_data = event.node.data

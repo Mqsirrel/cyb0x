@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -38,28 +39,50 @@ class HelpModal(ModalScreen[None]):
     }
     """
 
+    @staticmethod
+    def _build_help_text() -> Text:
+        """Builds the shortcut guide as a rich Text object.
+
+        A Text instance is used instead of markup-with-padding because Textual
+        collapses runs of whitespace in markup strings, which destroys the
+        key/description column alignment.
+        """
+        help_text = Text()
+        help_text.append("Navigation & Tab Switching:\n", style="bold yellow")
+
+        nav_rows = [
+            ("1 - 5", "Switch tabs (Workbench, Creds, Leads, Evidence, Pivots)"),
+            ("Tab / S-Tab", "Switch focus between Target Tree and Action Table"),
+            ("Up / Down", "Navigate rows / tree items"),
+        ]
+        for key, desc in nav_rows:
+            help_text.append("  ")
+            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{desc}\n")
+
+        help_text.append("\nEngagement Actions:\n", style="bold yellow")
+        action_rows = [
+            ("Space", "Cycle status of selected checklist item or lead"),
+            ("r", "Open Command Runner modal for selected recipe"),
+            ("a", "Add target host / ports manually"),
+            ("c", "Save discovered credential to vault"),
+            ("l", "Record new attack lead / hypothesis"),
+            ("e", "Capture proof flag / evidence with OffSec validation"),
+            ("x", "Export report (Notion, Markdown, Obsidian, JSON)"),
+            ("? / F1", "Open this help screen"),
+            ("q", "Quit Synapse"),
+        ]
+        for key, desc in action_rows:
+            help_text.append("  ")
+            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{desc}\n")
+
+        return help_text
+
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label("[bold cyan]SYNAPSE // Keyboard Shortcuts & Operator Guide[/bold cyan]")
-            yield Static(
-                """[bold yellow]Navigation & Tab Switching:[/bold yellow]
-  [bold cyan]1[/bold cyan] - [bold cyan]5[/bold cyan]       Switch tabs (Workbench, Cred Vault, Leads, Evidence, Pivots)
-  [bold cyan]Tab[/bold cyan] / [bold cyan]S-Tab[/bold cyan] Switch focus between Target Tree and Action Table
-  [bold cyan]↑ / ↓[/bold cyan]       Navigate rows / tree items
-
-[bold yellow]Engagement Actions:[/bold yellow]
-  [bold cyan]Space[/bold cyan]       Cycle status of selected checklist item or lead
-  [bold cyan]r[/bold cyan]           Open Command Runner modal for selected recipe
-  [bold cyan]a[/bold cyan]           Add target host / ports manually
-  [bold cyan]c[/bold cyan]           Save discovered credential to vault
-  [bold cyan]l[/bold cyan]           Record new attack lead / hypothesis
-  [bold cyan]e[/bold cyan]           Capture proof flag / evidence with OffSec validation
-  [bold cyan]x[/bold cyan]           Export assessment report (Markdown, Obsidian, JSON)
-  [bold cyan]?[/bold cyan] / [bold cyan]F1[/bold cyan]      Open this help screen
-  [bold cyan]q[/bold cyan]           Quit Synapse
-""",
-                id="help-content",
-            )
+            yield Static(self._build_help_text(), id="help-content")
             yield Button("Close (Esc)", variant="primary", id="btn-close")
 
     def action_cancel(self) -> None:

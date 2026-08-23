@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -153,6 +153,26 @@ def ingest(ctx: click.Context, scan_file: str, fmt: str) -> None:
     added_services = 0
     added_checks = 0
 
+    # Build per-target context from discovered credentials so rendered recipes
+    # use the real domain / valid credentials instead of engine defaults.
+    cred_context: Dict[str, Dict[str, str]] = {}
+    for pc in parsed_creds:
+        ip = pc.get("target_ip")
+        if not ip:
+            continue
+        ctx = cred_context.setdefault(
+            ip, {"user": "admin", "password": "password", "domain": "", "is_admin": ""}
+        )
+        if pc.get("domain") and not ctx["domain"]:
+            ctx["domain"] = pc["domain"]
+        # Only plaintext passwords map cleanly onto the {USER}/{PASS} recipe vars
+        if pc.get("cred_type", "password") == "password":
+            is_admin = bool(pc.get("is_admin"))
+            if ctx["user"] == "admin" or (is_admin and ctx["is_admin"] != "1"):
+                ctx["user"] = pc["username"]
+                ctx["password"] = pc["secret"]
+                ctx["is_admin"] = "1" if is_admin else ctx["is_admin"]
+
     for pt in parsed_targets:
         target = repo.add_or_get_target(
             ip=pt["ip"],
@@ -160,6 +180,11 @@ def ingest(ctx: click.Context, scan_file: str, fmt: str) -> None:
             os=pt.get("os", "Unknown"),
         )
         added_targets += 1
+
+        target_ctx = cred_context.get(pt["ip"], {})
+        domain = pt.get("domain") or target_ctx.get("domain") or "WORKGROUP"
+        user = target_ctx.get("user", "admin")
+        password = target_ctx.get("password", "password")
 
         for svc_data in pt.get("services", []):
             svc = repo.add_or_update_service(
@@ -177,7 +202,12 @@ def ingest(ctx: click.Context, scan_file: str, fmt: str) -> None:
             raw_checks = engine.get_checklists_for_service(svc)
             for rc in raw_checks:
                 rendered_cmd = engine.render_command(
-                    rc.get("command_template", ""), target, svc
+                    rc.get("command_template", ""),
+                    target,
+                    svc,
+                    user=user,
+                    password=password,
+                    domain=domain,
                 )
                 repo.add_checklist_item(
                     service_id=svc.id,  # type: ignore
