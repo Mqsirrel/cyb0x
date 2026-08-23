@@ -77,32 +77,33 @@ def generate_scan(hosts: int, ports: int) -> List[Dict]:
 
 
 def run_ingest(repo: DatabaseRepository, engine: MethodologyEngine, parsed_targets: List[Dict]) -> Dict[str, int]:
-    """Mirrors the CLI `ingest` command write path."""
+    """Mirrors the CLI `ingest` command write path (single batched transaction)."""
     counts = {"targets": 0, "services": 0, "checks": 0}
-    for pt in parsed_targets:
-        target = repo.add_or_get_target(ip=pt["ip"], hostname=pt.get("hostname", ""), os=pt.get("os", "Unknown"))
-        counts["targets"] += 1
-        for svc_data in pt["services"]:
-            svc = repo.add_or_update_service(
-                target_id=target.id,
-                port=svc_data["port"],
-                protocol=svc_data.get("protocol", "tcp"),
-                name=svc_data.get("name", "unknown"),
-                product=svc_data.get("product", ""),
-                version=svc_data.get("version", ""),
-                banner=svc_data.get("banner", ""),
-            )
-            counts["services"] += 1
-            for rc in engine.get_checklists_for_service(svc):
-                cmd = engine.render_command(rc.get("command_template", ""), target, svc)
-                repo.add_checklist_item(
-                    service_id=svc.id,
-                    category=rc.get("category", "enum"),
-                    title=rc.get("title", ""),
-                    description=rc.get("description", ""),
-                    command_template=cmd,
+    with repo.transaction():
+        for pt in parsed_targets:
+            target = repo.add_or_get_target(ip=pt["ip"], hostname=pt.get("hostname", ""), os=pt.get("os", "Unknown"))
+            counts["targets"] += 1
+            for svc_data in pt["services"]:
+                svc = repo.add_or_update_service(
+                    target_id=target.id,
+                    port=svc_data["port"],
+                    protocol=svc_data.get("protocol", "tcp"),
+                    name=svc_data.get("name", "unknown"),
+                    product=svc_data.get("product", ""),
+                    version=svc_data.get("version", ""),
+                    banner=svc_data.get("banner", ""),
                 )
-                counts["checks"] += 1
+                counts["services"] += 1
+                for rc in engine.get_checklists_for_service(svc):
+                    cmd = engine.render_command(rc.get("command_template", ""), target, svc)
+                    repo.add_checklist_item(
+                        service_id=svc.id,
+                        category=rc.get("category", "enum"),
+                        title=rc.get("title", ""),
+                        description=rc.get("description", ""),
+                        command_template=cmd,
+                    )
+                    counts["checks"] += 1
     return counts
 
 

@@ -18,9 +18,17 @@ class MethodologyEngine:
     def __init__(self, custom_rules_path: Optional[Path] = None):
         self.rules: Dict[str, Any] = {}
         self.initial_recon_rules: List[Dict[str, Any]] = []
+        self._compiled_patterns: Dict[str, List[re.Pattern]] = {}
         self._load_default_rules()
         if custom_rules_path and custom_rules_path.exists():
             self._load_custom_rules(custom_rules_path)
+
+    def _rebuild_pattern_cache(self) -> None:
+        """Precompiles name/banner regexes once so match_service avoids re-compilation."""
+        self._compiled_patterns = {
+            key: [re.compile(p, re.IGNORECASE) for p in (defn.get("name_patterns", []) or [])]
+            for key, defn in self.rules.items()
+        }
 
     def _load_default_rules(self) -> None:
         bundled_path = Path(__file__).parent / "data" / "services.yaml"
@@ -34,6 +42,7 @@ class MethodologyEngine:
                         self.initial_recon_rules = data["initial_recon"]
             except Exception:
                 self.rules = {}
+        self._rebuild_pattern_cache()
 
     def _load_custom_rules(self, path: Path) -> None:
         try:
@@ -45,6 +54,7 @@ class MethodologyEngine:
                     self.initial_recon_rules = data["initial_recon"]
         except Exception:
             pass
+        self._rebuild_pattern_cache()
 
     def match_service(self, service: Service) -> str:
         """Determines the best rule key for a given service based on pattern & port scoring."""
@@ -59,18 +69,16 @@ class MethodologyEngine:
         for key, defn in self.rules.items():
             if key == "generic_unknown":
                 continue
-            ports = defn.get("ports", [])
-            patterns = defn.get("name_patterns", [])
 
             score = 0
-            # Name/banner pattern match is prioritized
-            for pat in patterns:
-                if re.search(pat, combined_text, re.IGNORECASE):
+            # Name/banner pattern match is prioritized (patterns precompiled at load)
+            for pat in self._compiled_patterns.get(key, []):
+                if pat.search(combined_text):
                     score += 10
                     break
 
             # Exact port match
-            if service.port in ports:
+            if service.port in defn.get("ports", []):
                 score += 5
 
             if score > highest_score:

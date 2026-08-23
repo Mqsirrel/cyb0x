@@ -342,32 +342,34 @@ class SynapseTUI(App):
             return 0
 
         ingested = 0
-        for pt in parsed_targets:
-            if pt.get("ip") != target.ip:
-                continue
-            for svc_data in pt.get("services", []):
-                try:
-                    svc = self.repo.add_or_update_service(
-                        target_id=target.id,  # type: ignore
-                        port=svc_data["port"],
-                        protocol=svc_data.get("protocol", "tcp"),
-                        name=svc_data.get("name", "unknown"),
-                        product=svc_data.get("product", ""),
-                        version=svc_data.get("version", ""),
-                        banner=svc_data.get("banner", ""),
-                    )
-                except Exception:
+        # Batch the whole ingestion into one commit (transaction() is nested-safe).
+        with self.repo.transaction():
+            for pt in parsed_targets:
+                if pt.get("ip") != target.ip:
                     continue
-                for rc in self.methodology.get_checklists_for_service(svc):
-                    cmd = self.methodology.render_command(rc.get("command_template", ""), target, svc)
-                    self.repo.add_checklist_item(
-                        service_id=svc.id,  # type: ignore
-                        category=rc.get("category", "enum"),
-                        title=rc.get("title", ""),
-                        description=rc.get("description", ""),
-                        command_template=cmd,
-                    )
-                ingested += 1
+                for svc_data in pt.get("services", []):
+                    try:
+                        svc = self.repo.add_or_update_service(
+                            target_id=target.id,  # type: ignore
+                            port=svc_data["port"],
+                            protocol=svc_data.get("protocol", "tcp"),
+                            name=svc_data.get("name", "unknown"),
+                            product=svc_data.get("product", ""),
+                            version=svc_data.get("version", ""),
+                            banner=svc_data.get("banner", ""),
+                        )
+                    except Exception:
+                        continue
+                    for rc in self.methodology.get_checklists_for_service(svc):
+                        cmd = self.methodology.render_command(rc.get("command_template", ""), target, svc)
+                        self.repo.add_checklist_item(
+                            service_id=svc.id,  # type: ignore
+                            category=rc.get("category", "enum"),
+                            title=rc.get("title", ""),
+                            description=rc.get("description", ""),
+                            command_template=cmd,
+                        )
+                    ingested += 1
         return ingested
 
     def action_initial_recon(self) -> None:

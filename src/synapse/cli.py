@@ -173,70 +173,74 @@ def ingest(ctx: click.Context, scan_file: str, fmt: str) -> None:
                 ctx["password"] = pc["secret"]
                 ctx["is_admin"] = "1" if is_admin else ctx["is_admin"]
 
-    for pt in parsed_targets:
-        target = repo.add_or_get_target(
-            ip=pt["ip"],
-            hostname=pt.get("hostname", ""),
-            os=pt.get("os", "Unknown"),
-        )
-        added_targets += 1
-
-        target_ctx = cred_context.get(pt["ip"], {})
-        domain = pt.get("domain") or target_ctx.get("domain") or "WORKGROUP"
-        user = target_ctx.get("user", "admin")
-        password = target_ctx.get("password", "password")
-
-        for svc_data in pt.get("services", []):
-            svc = repo.add_or_update_service(
-                target_id=target.id,  # type: ignore
-                port=svc_data["port"],
-                protocol=svc_data.get("protocol", "tcp"),
-                name=svc_data.get("name", "unknown"),
-                product=svc_data.get("product", ""),
-                version=svc_data.get("version", ""),
-                banner=svc_data.get("banner", ""),
+    # Single transaction for the whole scan: one fsync instead of one per row.
+    # Repository transaction() is nested-safe, so inner writes join this scope.
+    with repo.transaction():
+        for pt in parsed_targets:
+            target = repo.add_or_get_target(
+                ip=pt["ip"],
+                hostname=pt.get("hostname", ""),
+                os=pt.get("os", "Unknown"),
             )
-            added_services += 1
+            added_targets += 1
 
-            # Auto-populate methodology checklists
-            raw_checks = engine.get_checklists_for_service(svc)
-            for rc in raw_checks:
-                rendered_cmd = engine.render_command(
-                    rc.get("command_template", ""),
-                    target,
-                    svc,
-                    user=user,
-                    password=password,
-                    domain=domain,
-                )
-                repo.add_checklist_item(
-                    service_id=svc.id,  # type: ignore
-                    category=rc.get("category", "enum"),
-                    title=rc.get("title", ""),
-                    description=rc.get("description", ""),
-                    command_template=rendered_cmd,
-                    status=ChecklistStatus.TODO,
-                )
-                added_checks += 1
+            target_ctx = cred_context.get(pt["ip"], {})
+            domain = pt.get("domain") or target_ctx.get("domain") or "WORKGROUP"
+            user = target_ctx.get("user", "admin")
+            password = target_ctx.get("password", "password")
 
-    # Ingest credentials if any
+            for svc_data in pt.get("services", []):
+                svc = repo.add_or_update_service(
+                    target_id=target.id,  # type: ignore
+                    port=svc_data["port"],
+                    protocol=svc_data.get("protocol", "tcp"),
+                    name=svc_data.get("name", "unknown"),
+                    product=svc_data.get("product", ""),
+                    version=svc_data.get("version", ""),
+                    banner=svc_data.get("banner", ""),
+                )
+                added_services += 1
+
+                # Auto-populate methodology checklists
+                raw_checks = engine.get_checklists_for_service(svc)
+                for rc in raw_checks:
+                    rendered_cmd = engine.render_command(
+                        rc.get("command_template", ""),
+                        target,
+                        svc,
+                        user=user,
+                        password=password,
+                        domain=domain,
+                    )
+                    repo.add_checklist_item(
+                        service_id=svc.id,  # type: ignore
+                        category=rc.get("category", "enum"),
+                        title=rc.get("title", ""),
+                        description=rc.get("description", ""),
+                        command_template=rendered_cmd,
+                        status=ChecklistStatus.TODO,
+                    )
+                    added_checks += 1
+
+    # Ingest credentials if any (also batched)
     added_creds = 0
-    for pc in parsed_creds:
-        t = repo.get_target_by_ip(pc["target_ip"])
-        cred = repo.add_credential(
-            username=pc["username"],
-            secret=pc["secret"],
-            cred_type=CredentialType(pc.get("cred_type", "password")),
-            domain=pc.get("domain", ""),
-            service_scope=pc.get("service_scope", ""),
-            target_id=t.id if t else None,
-            notes=pc.get("notes", ""),
-        )
-        if pc.get("is_admin") and t:
-            repo.record_credential_test(
-                cred.id, t.ip, pc.get("service_scope", "smb"), valid=True, admin=True  # type: ignore
+    with repo.transaction():
+        for pc in parsed_creds:
+            t = repo.get_target_by_ip(pc["target_ip"])
+            cred = repo.add_credential(
+                username=pc["username"],
+                secret=pc["secret"],
+                cred_type=CredentialType(pc.get("cred_type", "password")),
+                domain=pc.get("domain", ""),
+                service_scope=pc.get("service_scope", ""),
+                target_id=t.id if t else None,
+                notes=pc.get("notes", ""),
             )
-        added_creds += 1
+            if pc.get("is_admin") and t:
+                repo.record_credential_test(
+                    cred.id, t.ip, pc.get("service_scope", "smb"), valid=True, admin=True  # type: ignore
+                )
+            added_creds += 1
 
     console.print(
         Panel(
