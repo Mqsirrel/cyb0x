@@ -69,9 +69,9 @@ class CommandExecutor:
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
         }
-        # Process group support on POSIX
+        # Safe process group support on POSIX
         if sys.platform != "win32":
-            kwargs["preexec_fn"] = os.setsid  # type: ignore
+            kwargs["start_new_session"] = True
 
         try:
             process = await asyncio.create_subprocess_shell(command, **kwargs)
@@ -99,14 +99,20 @@ class CommandExecutor:
                 # Terminate entire process tree
                 if sys.platform != "win32" and process.pid:
                     try:
-                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                    except ProcessLookupError:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
                         pass
                 else:
                     try:
                         process.kill()
                     except Exception:
                         pass
+
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except Exception:
+                    pass
+
                 stdout = ""
                 stderr = f"Command timed out after {timeout} seconds."
                 return_code = -1

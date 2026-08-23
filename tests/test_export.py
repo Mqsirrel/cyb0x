@@ -81,6 +81,17 @@ def test_obsidian_vault_export(populated_repo: DatabaseRepository, tmp_path: Pat
     assert (vault_dir / "Targets" / "10.10.11.150.md").exists()
 
 
+def test_obsidian_vault_path_traversal_protection(tmp_path: Path):
+    repo = DatabaseRepository(":memory:")
+    repo.add_or_get_target("../../escape_test")
+    vault_dir = tmp_path / "vault"
+    export_obsidian_vault(repo, vault_dir)
+
+    # Ensure no file was created outside vault_dir
+    assert not (tmp_path / "escape_test.md").exists()
+    assert (vault_dir / "Targets" / "escape_test.md").exists()
+
+
 def test_json_backup_and_restore(populated_repo: DatabaseRepository, tmp_path: Path):
     json_str = export_workspace_json(populated_repo)
     data = json.loads(json_str)
@@ -100,3 +111,12 @@ def test_json_backup_and_restore(populated_repo: DatabaseRepository, tmp_path: P
     assert counts["leads"] == 1
     assert counts["evidence"] == 1
     assert counts["routes"] == 1
+
+
+def test_json_import_resilience(tmp_path: Path):
+    repo = DatabaseRepository(tmp_path / "resilient.db")
+    malformed_json = '{"targets": [{"ip": "10.1.1.1"}, {"ip": "10.2.2.2", "services": [{"port": 80}, {"no_port": 123}]}]}'
+    counts = import_workspace_json(repo, malformed_json)
+    assert counts["targets"] == 2
+    assert counts["services"] == 1
+    assert len(repo.list_targets()) == 2

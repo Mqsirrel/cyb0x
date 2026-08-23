@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List, Optional
+from rich.markup import escape
 from textual.widgets import Tree
 from textual.widgets.tree import TreeNode
 
@@ -31,8 +32,9 @@ class TargetTreeWidget(Tree):
                 TargetStatus.IGNORED: "[dim]✖[/dim]",
             }
             icon = status_map.get(target.status, "○")
-            hostname_str = f" ({target.hostname})" if target.hostname else ""
-            label = f"{icon} [bold]{target.ip}[/bold]{hostname_str} [dim]({len(target.services)} ports)[/dim]"
+            safe_ip = escape(target.ip)
+            safe_host = f" ({escape(target.hostname)})" if target.hostname else ""
+            label = f"{icon} [bold]{safe_ip}[/bold]{safe_host} [dim]({len(target.services)} ports)[/dim]"
 
             target_node = root.add(label, data={"type": "target", "id": target.id, "target": target})
 
@@ -40,9 +42,11 @@ class TargetTreeWidget(Tree):
                 svc_icon = "[green]●[/green]" if svc.status.value == "enumerated" else "[white]○[/white]"
                 if svc.status.value == "vulnerable":
                     svc_icon = "[bold red]⚡[/bold red]"
-                svc_label = f"  {svc_icon} [cyan]{svc.port}/{svc.protocol}[/cyan] [bold]{svc.name}[/bold]"
+                safe_name = escape(svc.name)
+                svc_label = f"  {svc_icon} [cyan]{svc.port}/{svc.protocol}[/cyan] [bold]{safe_name}[/bold]"
                 if svc.product:
-                    svc_label += f" [dim]{svc.product[:15]}[/dim]"
+                    safe_prod = escape(svc.product[:20])
+                    svc_label += f" [dim]{safe_prod}[/dim]"
                 target_node.add_leaf(svc_label, data={"type": "service", "id": svc.id, "target_id": target.id, "service": svc})
 
             target_node.expand()

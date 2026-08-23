@@ -14,6 +14,7 @@ from synapse.models import (
     LeadStatus,
     ProofType,
     ServiceStatus,
+    SeverityLevel,
     TargetStatus,
 )
 
@@ -27,7 +28,7 @@ def export_workspace_json(repo: DatabaseRepository) -> str:
     routes = repo.list_pivot_routes()
 
     data = {
-        "version": "1.0",
+        "version": "2.0",
         "targets": [t.model_dump(mode="json") for t in targets],
         "credentials": [c.model_dump(mode="json") for c in credentials],
         "leads": [l.model_dump(mode="json") for l in leads],
@@ -41,7 +42,7 @@ def export_workspace_json(repo: DatabaseRepository) -> str:
 def import_workspace_json(
     repo: DatabaseRepository, json_str_or_path: str | Path
 ) -> Dict[str, int]:
-    """Imports workspace data from JSON into the repository with full fidelity."""
+    """Imports workspace data from JSON into the repository with full fidelity and resilience."""
     if isinstance(json_str_or_path, Path) or (
         isinstance(json_str_or_path, str)
         and not json_str_or_path.strip().startswith("{")
@@ -64,8 +65,12 @@ def import_workspace_json(
 
     # 1. Import targets and services
     for t_data in data.get("targets", []):
+        ip_val = t_data.get("ip")
+        if not ip_val:
+            continue
+
         t = repo.add_or_get_target(
-            ip=t_data["ip"],
+            ip=ip_val,
             hostname=t_data.get("hostname", ""),
             os=t_data.get("os", "Unknown"),
             status=TargetStatus(t_data.get("status", "discovered")),
@@ -75,9 +80,13 @@ def import_workspace_json(
         counts["targets"] += 1
 
         for s_data in t_data.get("services", []):
+            port_val = s_data.get("port")
+            if port_val is None or not isinstance(port_val, int):
+                continue
+
             s = repo.add_or_update_service(
                 target_id=t.id,  # type: ignore
-                port=s_data["port"],
+                port=port_val,
                 protocol=s_data.get("protocol", "tcp"),
                 name=s_data.get("name", "unknown"),
                 product=s_data.get("product", ""),
@@ -89,19 +98,30 @@ def import_workspace_json(
             counts["services"] += 1
 
             for c_data in s_data.get("checklists", []):
+                title_val = c_data.get("title")
+                if not title_val:
+                    continue
+
                 repo.add_checklist_item(
                     service_id=s.id,  # type: ignore
                     category=c_data.get("category", "enum"),
-                    title=c_data["title"],
+                    title=title_val,
                     description=c_data.get("description", ""),
                     command_template=c_data.get("command_template", ""),
                     status=ChecklistStatus(c_data.get("status", "todo")),
+                    severity=SeverityLevel(c_data.get("severity", "info")),
+                    remediation=c_data.get("remediation", ""),
                     output_snippet=c_data.get("output_snippet", ""),
                 )
                 counts["checklists"] += 1
 
     # 2. Import credentials
     for c_data in data.get("credentials", []):
+        user_val = c_data.get("username")
+        secret_val = c_data.get("secret")
+        if not user_val or not secret_val:
+            continue
+
         t_id = None
         if c_data.get("target_ip"):
             t = repo.get_target_by_ip(c_data["target_ip"])
@@ -109,8 +129,8 @@ def import_workspace_json(
                 t_id = t.id
 
         cred = repo.add_credential(
-            username=c_data["username"],
-            secret=c_data["secret"],
+            username=user_val,
+            secret=secret_val,
             cred_type=CredentialType(c_data.get("cred_type", "password")),
             domain=c_data.get("domain", ""),
             service_scope=c_data.get("service_scope", ""),
@@ -130,15 +150,20 @@ def import_workspace_json(
 
     # 3. Import leads
     for l_data in data.get("leads", []):
+        title_val = l_data.get("title")
+        if not title_val:
+            continue
+
         t_id = None
         if l_data.get("target_ip"):
             t = repo.get_target_by_ip(l_data["target_ip"])
             if t:
                 t_id = t.id
         repo.add_lead(
-            title=l_data["title"],
+            title=title_val,
             description=l_data.get("description", ""),
             priority=LeadPriority(l_data.get("priority", "medium")),
+            severity=SeverityLevel(l_data.get("severity", "info")),
             status=LeadStatus(l_data.get("status", "backlog")),
             target_id=t_id,
         )
@@ -146,6 +171,10 @@ def import_workspace_json(
 
     # 4. Import evidence
     for e_data in data.get("evidence", []):
+        title_val = e_data.get("title")
+        if not title_val:
+            continue
+
         t_id = None
         if e_data.get("target_ip"):
             t = repo.get_target_by_ip(e_data["target_ip"])
@@ -154,7 +183,7 @@ def import_workspace_json(
         if t_id is not None:
             repo.add_evidence(
                 target_id=t_id,
-                title=e_data["title"],
+                title=title_val,
                 proof_type=ProofType(e_data.get("proof_type", "command_output")),
                 command=e_data.get("command", ""),
                 output=e_data.get("output", ""),
@@ -165,6 +194,8 @@ def import_workspace_json(
 
     # 5. Import pivot routes
     for r_data in data.get("pivot_routes", []):
+        if not r_data.get("name") or not r_data.get("jump_host_ip") or not r_data.get("target_subnet"):
+            continue
         repo.add_pivot_route(
             name=r_data["name"],
             jump_host_ip=r_data["jump_host_ip"],

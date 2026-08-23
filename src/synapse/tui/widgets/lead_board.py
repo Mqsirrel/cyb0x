@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static, DataTable
@@ -47,8 +48,8 @@ class LeadBoardWidget(Vertical):
                 str(l.id),
                 p_str,
                 s_str,
-                l.target_ip or "Global",
-                f"[bold]{l.title}[/bold]",
-                desc_preview,
+                escape(l.target_ip or "Global"),
+                f"[bold]{escape(l.title)}[/bold]",
+                escape(desc_preview),
                 key=str(l.id),
             )

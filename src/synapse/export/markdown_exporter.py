@@ -249,8 +249,14 @@ def export_obsidian_vault(repo: DatabaseRepository, output_dir: Path) -> Path:
         "",
         "## Targets",
     ]
+    def _clean_target_filename(raw_name: str) -> str:
+        cleaned = re.sub(r"[/\\:]", "_", raw_name.strip())
+        while ".." in cleaned:
+            cleaned = cleaned.replace("..", "_")
+        return cleaned.strip("._") or "target"
+
     for t in targets:
-        safe_ip_name = t.ip.replace(":", "_")
+        safe_ip_name = _clean_target_filename(t.ip)
         index_content.append(f"- [[{safe_ip_name}]] - {t.os} (`{t.status.value}`)")
 
     index_content.extend([
@@ -263,7 +269,7 @@ def export_obsidian_vault(repo: DatabaseRepository, output_dir: Path) -> Path:
 
     # 2. Target Notes
     for t in targets:
-        safe_ip_name = t.ip.replace(":", "_")
+        safe_ip_name = _clean_target_filename(t.ip)
         target_lines = [
             f"# Target: {t.ip}",
             f"- **Hostname:** {t.hostname or 'None'}",

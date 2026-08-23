@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
@@ -40,33 +41,37 @@ class MethodologyEngine:
             pass
 
     def match_service(self, service: Service) -> str:
-        """Determines the best rule key for a given service."""
+        """Determines the best rule key for a given service based on pattern & port scoring."""
         svc_name = (service.name or "").lower()
         svc_product = (service.product or "").lower()
         svc_banner = (service.banner or "").lower()
-        combined_text = f"{svc_name} {svc_product} {svc_banner}"
+        combined_text = f"{svc_name} {svc_product} {svc_banner}".strip()
 
-        # 1. Exact port & pattern matches
+        best_key = "generic_unknown"
+        highest_score = 0
+
         for key, defn in self.rules.items():
             if key == "generic_unknown":
                 continue
             ports = defn.get("ports", [])
             patterns = defn.get("name_patterns", [])
 
-            # Check port match
-            port_match = service.port in ports
-
-            # Check regex pattern match
-            pattern_match = False
+            score = 0
+            # Name/banner pattern match is prioritized
             for pat in patterns:
                 if re.search(pat, combined_text, re.IGNORECASE):
-                    pattern_match = True
+                    score += 10
                     break
 
-            if port_match or pattern_match:
-                return key
+            # Exact port match
+            if service.port in ports:
+                score += 5
 
-        return "generic_unknown"
+            if score > highest_score:
+                highest_score = score
+                best_key = key
+
+        return best_key
 
     def get_checklists_for_service(self, service: Service) -> List[Dict[str, Any]]:
         """Returns the list of raw checklist definitions for a service."""
@@ -81,26 +86,45 @@ class MethodologyEngine:
         service: Service,
         user: str = "admin",
         password: str = "password",
+        ntlm_hash: str = "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
         domain: str = "WORKGROUP",
         wordlist: str = "/usr/share/wordlists/dirb/common.txt",
     ) -> str:
-        """Substitutes variables into a command template."""
+        """Substitutes variables into a command template safely with URL and protocol awareness."""
         if not template:
             return ""
 
+        # Determine HTTP vs HTTPS protocol
+        is_ssl = (
+            service.port in [443, 8443, 9443]
+            or "ssl" in (service.name or "").lower()
+            or "https" in (service.name or "").lower()
+        )
+        proto_scheme = "https" if is_ssl else "http"
+
+        target_host = target.hostname if target.hostname else target.ip
+
         replacements = {
-            "{IP}": target.ip,
-            "{PORT}": str(service.port),
-            "{HOST}": target.hostname if target.hostname else target.ip,
-            "{USER}": user,
-            "{PASS}": password,
-            "{DOMAIN}": domain,
-            "{WORDLIST}": wordlist,
-            "{PRODUCT}": service.product or service.name,
-            "{VERSION}": service.version or "",
+            "IP": target.ip,
+            "PORT": str(service.port),
+            "HOST": target_host,
+            "USER": user,
+            "PASS": password,
+            "HASH": ntlm_hash,
+            "DOMAIN": domain,
+            "WORDLIST": wordlist,
+            "PRODUCT": service.product or service.name,
+            "VERSION": service.version or "",
+            "PROTO": proto_scheme,
         }
 
+        # Substitute {PROTO} or auto-adjust http:// to https:// when SSL is active
         rendered = template
-        for k, v in replacements.items():
-            rendered = rendered.replace(k, v)
-        return rendered
+        if is_ssl and "http://{IP}:{PORT}" in rendered:
+            rendered = rendered.replace("http://{IP}:{PORT}", "https://{IP}:{PORT}")
+
+        def replace_token(match: re.Match) -> str:
+            token = match.group(1)
+            return replacements.get(token, match.group(0))
+
+        return re.sub(r"\{(\w+)\}", replace_token, rendered)

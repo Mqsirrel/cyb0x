@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select
@@ -10,6 +11,10 @@ from textual.widgets import Button, Input, Label, Select
 
 class AddCredModal(ModalScreen[dict]):
     """Dialog for creating a new credential entry."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
 
     DEFAULT_CSS = """
     AddCredModal {
@@ -66,6 +71,9 @@ class AddCredModal(ModalScreen[dict]):
             with Horizontal(id="buttons"):
                 yield Button("Cancel", variant="default", id="btn-cancel")
                 yield Button("Save Credential", variant="primary", id="btn-save")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":

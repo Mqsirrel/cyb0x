@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import List
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static, DataTable
@@ -28,17 +29,17 @@ class CredentialMatrixWidget(Vertical):
             tested_summary = []
             for tip, tdata in c.tested_targets.items():
                 status_mark = "✔ (Pwn3d)" if tdata.get("admin") else ("✔" if tdata.get("valid") else "✖")
-                tested_summary.append(f"{tip}:{status_mark}")
+                tested_summary.append(f"{escape(str(tip))}:{status_mark}")
             tested_str = ", ".join(tested_summary) if tested_summary else "Untested"
             secret_disp = c.secret if len(c.secret) <= 30 else c.secret[:27] + "..."
 
             table.add_row(
                 str(c.id),
-                c.domain or "-",
-                f"[bold]{c.username}[/bold]",
-                f"[yellow]{secret_disp}[/yellow]",
-                c.cred_type.value,
-                c.service_scope or "general",
+                escape(c.domain or "-"),
+                f"[bold]{escape(c.username)}[/bold]",
+                f"[yellow]{escape(secret_disp)}[/yellow]",
+                escape(c.cred_type.value),
+                escape(c.service_scope or "general"),
                 tested_str,
                 key=str(c.id),
             )

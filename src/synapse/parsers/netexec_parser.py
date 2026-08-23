@@ -10,7 +10,15 @@ from typing import Any, Dict, List, Union
 def parse_netexec_output(content_or_path: Union[str, Path]) -> Dict[str, Any]:
     """Parses NetExec / CrackMapExec logs, extracting targets, services, and credentials."""
     if isinstance(content_or_path, Path) or (
-        isinstance(content_or_path, str) and Path(content_or_path).exists()
+        isinstance(content_or_path, str)
+        and not content_or_path.strip().startswith("SMB")
+        and not content_or_path.strip().startswith("WINRM")
+        and not content_or_path.strip().startswith("SSH")
+        and not content_or_path.strip().startswith("MSSQL")
+        and not content_or_path.strip().startswith("LDAP")
+        and not content_or_path.strip().startswith("FTP")
+        and not content_or_path.strip().startswith("RDP")
+        and Path(content_or_path).exists()
     ):
         with open(content_or_path, "r", encoding="utf-8") as f:
             raw = f.read()
@@ -20,13 +28,15 @@ def parse_netexec_output(content_or_path: Union[str, Path]) -> Dict[str, Any]:
     targets_map: Dict[str, Dict[str, Any]] = {}
     credentials: List[Dict[str, Any]] = []
 
+    # Matches: PROTO IP PORT [HOSTNAME] [*|+|-|!] REST
     header_pattern = re.compile(
-        r"^(SMB|WINRM|SSH|MSSQL|LDAP|FTP|RDP|WMI|VNC)\s+([0-9a-fA-F.:]+)\s+(\d+)\s+(?:([^\s\[\*|\+|\-|\!\]]+)\s+)?([\[\*|\+|\-|\!\]].*)$",
+        r"^(SMB|WINRM|SSH|MSSQL|LDAP|FTP|RDP|WMI|VNC)\s+([0-9a-fA-F.:]+)\s+(\d+)\s+(?:([A-Za-z0-9._\-]+)\s+)?(?=\[|\*|\+|\-|\!)(.+)$",
         re.IGNORECASE,
     )
 
+    # Strictly matches credentials directly following [+] STATUS
     cred_pattern = re.compile(
-        r"\[\+\]\s+(?:([^\\]+)\\)?([^\s:]+):(.*)$",
+        r"\[\+\]\s+(?:([a-zA-Z0-9._\-]+)\\)?([a-zA-Z0-9._\-]+):(.*)$",
         re.IGNORECASE,
     )
 

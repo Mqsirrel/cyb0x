@@ -221,6 +221,9 @@ class SynapseTUI(App):
         self.query_one("#tabs", TabbedContent).active = tab_id
 
     def action_add_target(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         def on_result(res: Optional[dict]) -> None:
             if not res:
                 return
@@ -258,6 +261,9 @@ class SynapseTUI(App):
         self.push_screen(AddTargetModal(), on_result)
 
     def action_add_cred(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         def on_result(res: Optional[dict]) -> None:
             if not res:
                 return
@@ -276,6 +282,9 @@ class SynapseTUI(App):
         self.push_screen(AddCredModal(), on_result)
 
     def action_add_lead(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         def on_result(res: Optional[dict]) -> None:
             if not res:
                 return
@@ -293,6 +302,9 @@ class SynapseTUI(App):
         self.push_screen(AddLeadModal(), on_result)
 
     def action_add_evidence(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         if not self.selected_target:
             self.notify("Please select a target first to attach evidence/flags.", severity="warning")
             return
@@ -321,13 +333,16 @@ class SynapseTUI(App):
         self.push_screen(AddEvidenceModal(), on_result)
 
     def action_run_recipe(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         tabs = self.query_one("#tabs", TabbedContent)
         if tabs.active != "tab-workbench" or not self.selected_service:
             self.notify("Select a service in the Workbench to run a recipe.", severity="warning")
             return
 
         table = self.query_one("#checklist-table", DataTable)
-        if table.cursor_row is None:
+        if table.row_count == 0 or table.cursor_row is None:
             self.notify("Select a checklist row in the table first.", severity="warning")
             return
 
@@ -426,6 +441,9 @@ class SynapseTUI(App):
                 pass
 
     def action_export_report(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+
         def on_result(res: Optional[dict]) -> None:
             if not res:
                 return

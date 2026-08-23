@@ -1,4 +1,4 @@
-"""Repository for SQLite database operations in Synapse."""
+"""Repository for database operations and data persistence."""
 
 from __future__ import annotations
 
@@ -29,6 +29,20 @@ from synapse.models import (
 )
 
 
+def _parse_dt(val: Optional[str]) -> datetime:
+    """Parses datetime strings from SQLite into timezone-aware UTC datetime objects."""
+    if not val:
+        return datetime.now(timezone.utc)
+    try:
+        clean_val = str(val).replace(" ", "T")
+        dt = datetime.fromisoformat(clean_val)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
 class DatabaseRepository:
     """Handles all persistence and queries for Synapse workspaces."""
 
@@ -36,8 +50,8 @@ class DatabaseRepository:
         self._mem_conn: Optional[sqlite3.Connection] = None
         if isinstance(db_path, str) and db_path == ":memory:":
             self.db_path = ":memory:"
-            # Keep a persistent connection for in-memory DBs
-            self._mem_conn = sqlite3.connect(":memory:")
+            # Thread-safe in-memory SQLite connection for async tests/runners
+            self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._mem_conn.row_factory = sqlite3.Row
             self._mem_conn.execute("PRAGMA foreign_keys = ON;")
         else:
@@ -50,7 +64,7 @@ class DatabaseRepository:
     def get_connection(self) -> sqlite3.Connection:
         if self._mem_conn is not None:
             return self._mem_conn
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -74,6 +88,7 @@ class DatabaseRepository:
         hostname: str = "",
         os: str = "Unknown",
         status: TargetStatus = TargetStatus.DISCOVERED,
+        in_scope: bool = True,
         tags: Optional[List[str]] = None,
         notes: str = "",
     ) -> Target:
@@ -86,19 +101,27 @@ class DatabaseRepository:
             if row:
                 new_host = hostname if hostname else row["hostname"]
                 new_os = os if (os != "Unknown" and os) else row["os"]
+                new_tags = tags_json if tags is not None else row["tags"]
+                new_notes = notes if notes else row["notes"]
+                new_status = status.value if status != TargetStatus.DISCOVERED else row["status"]
+                new_in_scope = 1 if in_scope else 0
                 cur.execute(
-                    "UPDATE targets SET hostname = ?, os = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (new_host, new_os, row["id"]),
+                    """
+                    UPDATE targets
+                    SET hostname = ?, os = ?, tags = ?, notes = ?, status = ?, in_scope = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (new_host, new_os, new_tags, new_notes, new_status, new_in_scope, row["id"]),
                 )
                 conn.commit()
                 target_id = row["id"]
             else:
                 cur.execute(
                     """
-                    INSERT INTO targets (ip, hostname, os, status, tags, notes)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO targets (ip, hostname, os, status, in_scope, tags, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (ip, hostname, os, status.value, tags_json, notes),
+                    (ip, hostname, os, status.value, 1 if in_scope else 0, tags_json, notes),
                 )
                 target_id = cur.lastrowid
                 conn.commit()
@@ -140,19 +163,36 @@ class DatabaseRepository:
         return self.get_target_by_id(target_id)
 
     def list_targets(self) -> List[Target]:
+        """Batch-fetches all targets, services, and checklists in O(1) database round-trips."""
         conn = self.get_connection()
         try:
             cur = conn.cursor()
             cur.execute("SELECT * FROM targets ORDER BY ip ASC")
-            rows = cur.fetchall()
-            targets = [self._row_to_target(r) for r in rows]
+            target_rows = cur.fetchall()
+            if not target_rows:
+                return []
+
+            targets_map: Dict[int, Target] = {r["id"]: self._row_to_target(r) for r in target_rows}
+
+            cur.execute("SELECT * FROM services ORDER BY target_id ASC, port ASC")
+            service_rows = cur.fetchall()
+            services_map: Dict[int, Service] = {r["id"]: self._row_to_service(r) for r in service_rows}
+
+            cur.execute("SELECT * FROM checklists ORDER BY service_id ASC, id ASC")
+            checklist_rows = cur.fetchall()
+            for cr in checklist_rows:
+                chk = self._row_to_checklist(cr)
+                if chk.service_id in services_map:
+                    services_map[chk.service_id].checklists.append(chk)
+
+            for svc in services_map.values():
+                if svc.target_id in targets_map:
+                    targets_map[svc.target_id].services.append(svc)
+
+            return list(targets_map.values())
         finally:
             if self._mem_conn is None:
                 conn.close()
-
-        for t in targets:
-            t.services = self.get_services_by_target(t.id)  # type: ignore
-        return targets
 
     def update_target_status(self, target_id: int, status: TargetStatus) -> bool:
         conn = self.get_connection()
@@ -161,20 +201,6 @@ class DatabaseRepository:
             cur.execute(
                 "UPDATE targets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status.value, target_id),
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
-
-    def update_target_notes(self, target_id: int, notes: str) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE targets SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (notes, target_id),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -217,9 +243,9 @@ class DatabaseRepository:
             )
             row = cur.fetchone()
             if row:
-                new_name = name if (name != "unknown" and name) else row["name"]
-                new_prod = product if product else row["product"]
-                new_ver = version if version else row["version"]
+                new_name = name if name != "unknown" else row["name"]
+                new_product = product if product else row["product"]
+                new_version = version if version else row["version"]
                 new_banner = banner if banner else row["banner"]
                 cur.execute(
                     """
@@ -227,8 +253,9 @@ class DatabaseRepository:
                     SET name = ?, product = ?, version = ?, banner = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (new_name, new_prod, new_ver, new_banner, row["id"]),
+                    (new_name, new_product, new_version, new_banner, row["id"]),
                 )
+                conn.commit()
                 service_id = row["id"]
             else:
                 cur.execute(
@@ -236,10 +263,20 @@ class DatabaseRepository:
                     INSERT INTO services (target_id, port, protocol, name, product, version, banner, status, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (target_id, port, protocol, name, product, version, banner, status.value, notes),
+                    (
+                        target_id,
+                        port,
+                        protocol,
+                        name,
+                        product,
+                        version,
+                        banner,
+                        status.value,
+                        notes,
+                    ),
                 )
                 service_id = cur.lastrowid
-            conn.commit()
+                conn.commit()
         finally:
             if self._mem_conn is None:
                 conn.close()
@@ -294,20 +331,6 @@ class DatabaseRepository:
             if self._mem_conn is None:
                 conn.close()
 
-    def update_service_notes(self, service_id: int, notes: str) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE services SET notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (notes, service_id),
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
-
     # -------------------------------------------------------------------------
     # Checklist Operations
     # -------------------------------------------------------------------------
@@ -319,39 +342,57 @@ class DatabaseRepository:
         description: str = "",
         command_template: str = "",
         status: ChecklistStatus = ChecklistStatus.TODO,
+        severity: SeverityLevel = SeverityLevel.INFO,
+        remediation: str = "",
+        cve_refs: Optional[List[str]] = None,
         output_snippet: str = "",
     ) -> ChecklistItem:
+        cve_json = json.dumps(cve_refs or [])
         conn = self.get_connection()
         try:
             cur = conn.cursor()
             cur.execute(
-                "SELECT id FROM checklists WHERE service_id = ? AND title = ?",
+                "SELECT * FROM checklists WHERE service_id = ? AND title = ?",
                 (service_id, title),
             )
-            existing = cur.fetchone()
-            if existing:
-                item_id = existing["id"]
-                if output_snippet:
-                    cur.execute(
-                        "UPDATE checklists SET output_snippet = ?, status = ? WHERE id = ?",
-                        (output_snippet, status.value, item_id),
-                    )
-                    conn.commit()
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    """
+                    UPDATE checklists
+                    SET category = ?, description = ?, command_template = ?, severity = ?, remediation = ?, cve_refs = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (category, description, command_template, severity.value, remediation, cve_json, row["id"]),
+                )
+                conn.commit()
+                chk_id = row["id"]
             else:
                 cur.execute(
                     """
-                    INSERT INTO checklists (service_id, category, title, description, command_template, status, output_snippet)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO checklists (service_id, category, title, description, command_template, status, severity, remediation, cve_refs, output_snippet)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (service_id, category, title, description, command_template, status.value, output_snippet),
+                    (
+                        service_id,
+                        category,
+                        title,
+                        description,
+                        command_template,
+                        status.value,
+                        severity.value,
+                        remediation,
+                        cve_json,
+                        output_snippet,
+                    ),
                 )
-                item_id = cur.lastrowid
+                chk_id = cur.lastrowid
                 conn.commit()
         finally:
             if self._mem_conn is None:
                 conn.close()
 
-        return self.get_checklist_by_id(item_id)  # type: ignore
+        return self.get_checklist_by_id(chk_id)  # type: ignore
 
     def get_checklist_by_id(self, item_id: int) -> Optional[ChecklistItem]:
         conn = self.get_connection()
@@ -381,7 +422,10 @@ class DatabaseRepository:
                 conn.close()
 
     def update_checklist_status(
-        self, item_id: int, status: ChecklistStatus, output_snippet: Optional[str] = None
+        self,
+        item_id: int,
+        status: ChecklistStatus,
+        output_snippet: Optional[str] = None,
     ) -> bool:
         conn = self.get_connection()
         try:
@@ -411,13 +455,14 @@ class DatabaseRepository:
                 conn.close()
 
     # -------------------------------------------------------------------------
-    # Lead Operations
+    # Lead / Hypothesis Operations
     # -------------------------------------------------------------------------
     def add_lead(
         self,
         title: str,
         description: str = "",
         priority: LeadPriority = LeadPriority.MEDIUM,
+        severity: SeverityLevel = SeverityLevel.INFO,
         status: LeadStatus = LeadStatus.BACKLOG,
         target_id: Optional[int] = None,
     ) -> Lead:
@@ -426,10 +471,10 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO leads (target_id, title, description, priority, status)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO leads (target_id, title, description, priority, severity, status)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (target_id, title, description, priority.value, status.value),
+                (target_id, title, description, priority.value, severity.value, status.value),
             )
             lead_id = cur.lastrowid
             conn.commit()
@@ -445,10 +490,10 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT l.*, t.ip as target_ip
-                FROM leads l
-                LEFT JOIN targets t ON l.target_id = t.id
-                WHERE l.id = ?
+                SELECT leads.*, targets.ip as target_ip
+                FROM leads
+                LEFT JOIN targets ON leads.target_id = targets.id
+                WHERE leads.id = ?
                 """,
                 (lead_id,),
             )
@@ -464,38 +509,24 @@ class DatabaseRepository:
         conn = self.get_connection()
         try:
             cur = conn.cursor()
-            if target_id is not None:
+            if target_id:
                 cur.execute(
                     """
-                    SELECT l.*, t.ip as target_ip
-                    FROM leads l
-                    LEFT JOIN targets t ON l.target_id = t.id
-                    WHERE l.target_id = ?
-                    ORDER BY 
-                        CASE l.priority 
-                            WHEN 'critical' THEN 1 
-                            WHEN 'high' THEN 2 
-                            WHEN 'medium' THEN 3 
-                            WHEN 'low' THEN 4 
-                            ELSE 5 
-                        END ASC, l.id ASC
+                    SELECT leads.*, targets.ip as target_ip
+                    FROM leads
+                    LEFT JOIN targets ON leads.target_id = targets.id
+                    WHERE leads.target_id = ?
+                    ORDER BY leads.created_at DESC
                     """,
                     (target_id,),
                 )
             else:
                 cur.execute(
                     """
-                    SELECT l.*, t.ip as target_ip
-                    FROM leads l
-                    LEFT JOIN targets t ON l.target_id = t.id
-                    ORDER BY 
-                        CASE l.priority 
-                            WHEN 'critical' THEN 1 
-                            WHEN 'high' THEN 2 
-                            WHEN 'medium' THEN 3 
-                            WHEN 'low' THEN 4 
-                            ELSE 5 
-                        END ASC, l.id ASC
+                    SELECT leads.*, targets.ip as target_ip
+                    FROM leads
+                    LEFT JOIN targets ON leads.target_id = targets.id
+                    ORDER BY leads.created_at DESC
                     """
                 )
             rows = cur.fetchall()
@@ -530,7 +561,7 @@ class DatabaseRepository:
                 conn.close()
 
     # -------------------------------------------------------------------------
-    # Credential Operations
+    # Credential & Lateral Movement Matrix Operations
     # -------------------------------------------------------------------------
     def add_credential(
         self,
@@ -547,13 +578,32 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO credentials (target_id, username, secret, cred_type, domain, service_scope, tested_targets, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT id FROM credentials
+                WHERE username = ? AND secret = ? AND domain = ?
                 """,
-                (target_id, username, secret, cred_type.value, domain, service_scope, "{}", notes),
+                (username, secret, domain),
             )
-            cred_id = cur.lastrowid
-            conn.commit()
+            row = cur.fetchone()
+            if row:
+                cred_id = row["id"]
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO credentials (target_id, username, secret, cred_type, domain, service_scope, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_id,
+                        username,
+                        secret,
+                        cred_type.value,
+                        domain,
+                        service_scope,
+                        notes,
+                    ),
+                )
+                cred_id = cur.lastrowid
+                conn.commit()
         finally:
             if self._mem_conn is None:
                 conn.close()
@@ -566,10 +616,10 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT c.*, t.ip as target_ip
-                FROM credentials c
-                LEFT JOIN targets t ON c.target_id = t.id
-                WHERE c.id = ?
+                SELECT credentials.*, targets.ip as target_ip
+                FROM credentials
+                LEFT JOIN targets ON credentials.target_id = targets.id
+                WHERE credentials.id = ?
                 """,
                 (cred_id,),
             )
@@ -587,10 +637,10 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT c.*, t.ip as target_ip
-                FROM credentials c
-                LEFT JOIN targets t ON c.target_id = t.id
-                ORDER BY c.id ASC
+                SELECT credentials.*, targets.ip as target_ip
+                FROM credentials
+                LEFT JOIN targets ON credentials.target_id = targets.id
+                ORDER BY credentials.created_at DESC
                 """
             )
             rows = cur.fetchall()
@@ -600,27 +650,50 @@ class DatabaseRepository:
                 conn.close()
 
     def record_credential_test(
-        self, cred_id: int, target_ip: str, service: str, valid: bool, admin: bool = False
+        self,
+        cred_id: int,
+        target_ip: str,
+        service: str = "",
+        valid: bool = True,
+        admin: bool = False,
     ) -> bool:
-        cred = self.get_credential_by_id(cred_id)
-        if not cred:
-            return False
-        matrix = cred.tested_targets
-        matrix[target_ip] = {
-            "service": service,
-            "valid": valid,
-            "admin": admin,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
+        """Atomically records whether a credential was valid on a specific target."""
         conn = self.get_connection()
         try:
             cur = conn.cursor()
+            cur.execute("SELECT tested_targets FROM credentials WHERE id = ?", (cred_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+
+            tested: Dict[str, Any] = {}
+            if row["tested_targets"]:
+                try:
+                    tested = json.loads(row["tested_targets"])
+                except Exception:
+                    tested = {}
+
+            entry = {
+                "target_ip": target_ip,
+                "service": service,
+                "valid": valid,
+                "admin": admin,
+                "tested_at": datetime.now(timezone.utc).isoformat(),
+            }
+            tested[target_ip] = entry
+            if service:
+                tested[f"{target_ip}:{service}"] = entry
+
             cur.execute(
-                "UPDATE credentials SET tested_targets = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (json.dumps(matrix), cred_id),
+                """
+                UPDATE credentials
+                SET tested_targets = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (json.dumps(tested), cred_id),
             )
             conn.commit()
-            return cur.rowcount > 0
+            return True
         finally:
             if self._mem_conn is None:
                 conn.close()
@@ -637,18 +710,18 @@ class DatabaseRepository:
                 conn.close()
 
     # -------------------------------------------------------------------------
-    # Evidence / Proof Operations
+    # Evidence & Proof Operations
     # -------------------------------------------------------------------------
     def add_evidence(
         self,
         target_id: int,
         title: str,
         proof_type: ProofType = ProofType.COMMAND_OUTPUT,
+        service_id: Optional[int] = None,
         command: str = "",
         output: str = "",
         flag_hash: str = "",
         screenshot_path: str = "",
-        service_id: Optional[int] = None,
     ) -> Evidence:
         conn = self.get_connection()
         try:
@@ -683,10 +756,10 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT e.*, t.ip as target_ip
-                FROM evidence e
-                LEFT JOIN targets t ON e.target_id = t.id
-                WHERE e.id = ?
+                SELECT evidence.*, targets.ip as target_ip
+                FROM evidence
+                LEFT JOIN targets ON evidence.target_id = targets.id
+                WHERE evidence.id = ?
                 """,
                 (evidence_id,),
             )
@@ -702,24 +775,24 @@ class DatabaseRepository:
         conn = self.get_connection()
         try:
             cur = conn.cursor()
-            if target_id is not None:
+            if target_id:
                 cur.execute(
                     """
-                    SELECT e.*, t.ip as target_ip
-                    FROM evidence e
-                    LEFT JOIN targets t ON e.target_id = t.id
-                    WHERE e.target_id = ?
-                    ORDER BY e.created_at DESC
+                    SELECT evidence.*, targets.ip as target_ip
+                    FROM evidence
+                    LEFT JOIN targets ON evidence.target_id = targets.id
+                    WHERE evidence.target_id = ?
+                    ORDER BY evidence.created_at DESC
                     """,
                     (target_id,),
                 )
             else:
                 cur.execute(
                     """
-                    SELECT e.*, t.ip as target_ip
-                    FROM evidence e
-                    LEFT JOIN targets t ON e.target_id = t.id
-                    ORDER BY e.created_at DESC
+                    SELECT evidence.*, targets.ip as target_ip
+                    FROM evidence
+                    LEFT JOIN targets ON evidence.target_id = targets.id
+                    ORDER BY evidence.created_at DESC
                     """
                 )
             rows = cur.fetchall()
@@ -740,7 +813,7 @@ class DatabaseRepository:
                 conn.close()
 
     # -------------------------------------------------------------------------
-    # Pivot Routes Operations
+    # Pivot Route Operations
     # -------------------------------------------------------------------------
     def add_pivot_route(
         self,
@@ -786,7 +859,7 @@ class DatabaseRepository:
         conn = self.get_connection()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM pivot_routes ORDER BY id ASC")
+            cur.execute("SELECT * FROM pivot_routes ORDER BY created_at DESC")
             rows = cur.fetchall()
             return [self._row_to_pivot_route(r) for r in rows]
         finally:
@@ -805,9 +878,10 @@ class DatabaseRepository:
                 conn.close()
 
     # -------------------------------------------------------------------------
-    # Global Assessment Statistics
+    # Engagement Statistics
     # -------------------------------------------------------------------------
-    def get_stats(self) -> Dict[str, Any]:
+    def get_engagement_stats(self) -> Dict[str, Any]:
+        """Calculates global engagement metrics across all targets."""
         conn = self.get_connection()
         try:
             cur = conn.cursor()
@@ -823,38 +897,46 @@ class DatabaseRepository:
             cur.execute("SELECT COUNT(*) FROM services")
             total_services = cur.fetchone()[0]
 
-            cur.execute("SELECT COUNT(*) FROM checklists WHERE status = 'checked'")
+            cur.execute("SELECT COUNT(*) FROM checklists")
+            total_checks = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM checklists WHERE status IN ('checked', 'finding')")
             completed_checks = cur.fetchone()[0]
 
             cur.execute("SELECT COUNT(*) FROM checklists WHERE status = 'finding'")
             total_findings = cur.fetchone()[0]
 
             cur.execute("SELECT COUNT(*) FROM credentials")
-            total_creds = cur.fetchone()[0]
+            total_credentials = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM evidence WHERE flag_hash != ''")
+            captured_flags = cur.fetchone()[0]
 
             cur.execute("SELECT COUNT(*) FROM leads WHERE status IN ('backlog', 'in_progress')")
             active_leads = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM evidence WHERE proof_type IN ('user_flag', 'root_flag')")
-            captured_flags = cur.fetchone()[0]
 
             return {
                 "total_targets": total_targets,
                 "pwned_targets": pwned_targets,
                 "foothold_targets": foothold_targets,
                 "total_services": total_services,
+                "total_checks": total_checks,
                 "completed_checks": completed_checks,
                 "total_findings": total_findings,
-                "total_credentials": total_creds,
-                "active_leads": active_leads,
+                "total_credentials": total_credentials,
                 "captured_flags": captured_flags,
+                "active_leads": active_leads,
             }
         finally:
             if self._mem_conn is None:
                 conn.close()
 
+    def get_stats(self) -> Dict[str, Any]:
+        """Alias for get_engagement_stats for backward compatibility."""
+        return self.get_engagement_stats()
+
     # -------------------------------------------------------------------------
-    # Row Helpers
+    # Row to Model Converters
     # -------------------------------------------------------------------------
     @staticmethod
     def _row_to_target(row: sqlite3.Row) -> Target:
@@ -870,10 +952,12 @@ class DatabaseRepository:
             hostname=row["hostname"] or "",
             os=row["os"] or "Unknown",
             status=TargetStatus(row["status"]),
+            in_scope=bool(row["in_scope"]) if "in_scope" in row.keys() and row["in_scope"] is not None else True,
             tags=tags,
             notes=row["notes"] or "",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+            services=[],
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     @staticmethod
@@ -889,8 +973,8 @@ class DatabaseRepository:
             banner=row["banner"] or "",
             status=ServiceStatus(row["status"]),
             notes=row["notes"] or "",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     @staticmethod
@@ -914,8 +998,8 @@ class DatabaseRepository:
             remediation=row["remediation"] if "remediation" in row.keys() and row["remediation"] else "",
             cve_refs=cve_refs,
             output_snippet=row["output_snippet"] or "",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     @staticmethod
@@ -929,8 +1013,8 @@ class DatabaseRepository:
             priority=LeadPriority(row["priority"]),
             severity=SeverityLevel(row["severity"]) if "severity" in row.keys() and row["severity"] else SeverityLevel.INFO,
             status=LeadStatus(row["status"]),
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     @staticmethod
@@ -952,8 +1036,8 @@ class DatabaseRepository:
             service_scope=row["service_scope"] or "",
             tested_targets=tested_targets,
             notes=row["notes"] or "",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
+            updated_at=_parse_dt(row["updated_at"]),
         )
 
     @staticmethod
@@ -969,7 +1053,7 @@ class DatabaseRepository:
             output=row["output"] or "",
             flag_hash=row["flag_hash"] or "",
             screenshot_path=row["screenshot_path"] or "",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
         )
 
     @staticmethod
@@ -983,5 +1067,5 @@ class DatabaseRepository:
             local_bind=row["local_bind"] or "127.0.0.1:1080",
             notes=row["notes"] or "",
             status=row["status"] or "active",
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(timezone.utc),
+            created_at=_parse_dt(row["created_at"]),
         )

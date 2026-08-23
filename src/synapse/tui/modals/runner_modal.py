@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, LoadingIndicator, Static, TextArea
@@ -13,6 +14,10 @@ from synapse.runner.executor import CommandExecutor
 
 class RunnerModal(ModalScreen[dict]):
     """Dialog for confirming, running, and capturing a command."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
 
     DEFAULT_CSS = """
     RunnerModal {
@@ -65,6 +70,9 @@ class RunnerModal(ModalScreen[dict]):
                 yield Button("Run Command", variant="warning", id="btn-run")
                 yield Button("Save to Evidence", variant="success", id="btn-save")
 
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cancel":
             self.dismiss(None)
@@ -73,22 +81,27 @@ class RunnerModal(ModalScreen[dict]):
         cmd = self.query_one("#cmd-input", Input).value.strip()
         status_lbl = self.query_one("#status-msg", Static)
         output_area = self.query_one("#cmd-output", TextArea)
+        run_btn = self.query_one("#btn-run", Button)
 
         if event.button.id == "btn-run":
             if not cmd:
                 return
 
+            run_btn.disabled = True
             status_lbl.update("[yellow]Executing command asynchronously...[/yellow]")
-            res = await CommandExecutor.run_command_async(cmd, timeout=30.0)
+            try:
+                res = await CommandExecutor.run_command_async(cmd, timeout=45.0)
 
-            full_out = res.stdout
-            if res.stderr:
-                full_out += f"\n[STDERR]\n{res.stderr}"
+                full_out = res.stdout
+                if res.stderr:
+                    full_out += f"\n[STDERR]\n{res.stderr}"
 
-            output_area.text = full_out
+                output_area.text = full_out
 
-            flags_info = f" | [bold green]Flags found: {', '.join(res.extracted_flags)}[/bold green]" if res.extracted_flags else ""
-            status_lbl.update(f"[green]Finished in {res.duration_seconds:.2f}s (Exit code: {res.return_code}){flags_info}[/green]")
+                flags_info = f" | [bold green]Flags found: {', '.join(res.extracted_flags)}[/bold green]" if res.extracted_flags else ""
+                status_lbl.update(f"[green]Finished in {res.duration_seconds:.2f}s (Exit code: {res.return_code}){flags_info}[/green]")
+            finally:
+                run_btn.disabled = False
 
         elif event.button.id == "btn-save":
             self.dismiss({

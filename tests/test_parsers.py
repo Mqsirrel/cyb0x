@@ -129,6 +129,15 @@ def test_parse_masscan():
     assert len(target["services"]) == 2
 
 
+def test_parse_masscan_truncated_json():
+    # Emulate a masscan run terminated mid-write
+    truncated = '[\n  { "ip": "10.0.0.9", "timestamp": "1", "ports": [ {"port": 80, "proto": "tcp"} ] },\n'
+    results = parse_masscan_json(truncated)
+    assert len(results) == 1
+    assert results[0]["ip"] == "10.0.0.9"
+    assert results[0]["services"][0]["port"] == 80
+
+
 def test_parse_netexec():
     res = parse_netexec_output(SAMPLE_NETEXEC_LOG)
     targets = res["targets"]
@@ -160,3 +169,12 @@ def test_parse_netexec():
     spaced_cred = creds[3]
     assert spaced_cred["username"] == "bob"
     assert spaced_cred["secret"] == "Complex Pass(1)!"
+
+
+def test_parse_netexec_hyphenated_hostname():
+    sample = "SMB 10.10.10.5 445 DESKTOP-ABC123 [+] CORP\\admin:Pass123\n"
+    res = parse_netexec_output(sample)
+    assert len(res["targets"]) == 1
+    assert res["targets"][0]["hostname"] == "DESKTOP-ABC123"
+    assert len(res["credentials"]) == 1
+    assert res["credentials"][0]["username"] == "admin"

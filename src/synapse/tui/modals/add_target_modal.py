@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Grid, Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Select
@@ -10,6 +11,10 @@ from textual.widgets import Button, Input, Label, Select
 
 class AddTargetModal(ModalScreen[dict]):
     """Dialog for creating a new target host."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
 
     DEFAULT_CSS = """
     AddTargetModal {
@@ -58,6 +63,9 @@ class AddTargetModal(ModalScreen[dict]):
                 yield Button("Cancel", variant="default", id="btn-cancel")
                 yield Button("Add Target", variant="primary", id="btn-save")
 
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-save":
             ip_val = self.query_one("#target-ip", Input).value.strip()
@@ -72,7 +80,9 @@ class AddTargetModal(ModalScreen[dict]):
                 for p in ports_raw.split(","):
                     p = p.strip()
                     if p.isdigit():
-                        ports.append(int(p))
+                        port_num = int(p)
+                        if 1 <= port_num <= 65535:
+                            ports.append(port_num)
 
             self.dismiss({
                 "ip": ip_val,
