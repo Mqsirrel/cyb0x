@@ -122,4 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_checklists_service ON checklists(service_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_target ON evidence(target_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_checklist ON evidence(checklist_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_username ON credentials(username);
+CREATE INDEX IF NOT EXISTS idx_leads_target ON leads(target_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_created ON evidence(created_at);
+CREATE INDEX IF NOT EXISTS idx_credentials_identity ON credentials(username, secret, domain);
 """

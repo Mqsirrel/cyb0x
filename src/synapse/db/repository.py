@@ -1,11 +1,24 @@
-"""Repository for database operations and data persistence."""
+"""Repository for database operations and data persistence.
+
+Performance notes:
+- A single persistent SQLite connection is held per repository instance
+  (thread-safe via an RLock) instead of opening/closing a connection for
+  every operation.
+- All writes run through a nested-safe ``transaction()`` context manager,
+  enabling callers to batch thousands of writes into a single fsync.
+- Writers return models constructed from known values instead of issuing
+  follow-up SELECTs (no write-then-read-back round trips).
+- Bulk loaders hydrate related rows in O(1) queries (no N+1).
+"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from synapse.db.migrations import run_migrations
@@ -47,38 +60,85 @@ class DatabaseRepository:
     """Handles all persistence and queries for Synapse workspaces."""
 
     def __init__(self, db_path: str | Path = ":memory:"):
-        self._mem_conn: Optional[sqlite3.Connection] = None
-        if isinstance(db_path, str) and db_path == ":memory:":
-            self.db_path = ":memory:"
-            # Thread-safe in-memory SQLite connection for async tests/runners
-            self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
-            self._mem_conn.row_factory = sqlite3.Row
-            self._mem_conn.execute("PRAGMA foreign_keys = ON;")
-        else:
-            p = Path(db_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            self.db_path = str(p)
+        self._lock = threading.RLock()
+        self.db_path = ":memory:" if db_path == ":memory:" else str(Path(db_path).absolute())
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+
+        # Connection-level PRAGMAs are applied exactly once here. journal_mode
+        # is persistent for file databases; running it per call wasted cycles.
+        with self._lock:
+            self._conn.execute("PRAGMA foreign_keys = ON;")
+            self._conn.execute("PRAGMA busy_timeout = 5000;")
+            try:
+                self._conn.execute("PRAGMA journal_mode = WAL;")
+            except sqlite3.DatabaseError:
+                pass  # e.g. in-memory DBs where WAL is unsupported
+            self._conn.execute("PRAGMA synchronous = NORMAL;")
+            try:
+                self._conn.execute("PRAGMA mmap_size = 134217728;")  # 128 MB
+            except sqlite3.DatabaseError:
+                pass
 
         self._init_db()
 
     def get_connection(self) -> sqlite3.Connection:
-        if self._mem_conn is not None:
-            return self._mem_conn
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON;")
-        conn.execute("PRAGMA journal_mode = WAL;")
-        conn.execute("PRAGMA busy_timeout = 5000;")
-        return conn
+        """Returns the repository's persistent connection (shared, thread-safe usage)."""
+        return self._conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """Nested-safe transaction scope: outermost caller controls commit/rollback."""
+        with self._lock:
+            nested = self._conn.in_transaction
+            if not nested:
+                self._conn.execute("BEGIN")
+            try:
+                yield self._conn
+            except Exception:
+                if not nested:
+                    self._conn.rollback()
+                raise
+            else:
+                if not nested:
+                    self._conn.commit()
+
+    def close(self) -> None:
+        """Closes the underlying connection (optional; repositories close on GC)."""
+        with self._lock:
+            try:
+                self._conn.commit()
+            except sqlite3.Error:
+                pass
+            self._conn.close()
 
     def _init_db(self) -> None:
-        conn = self.get_connection()
-        conn.executescript(SCHEMA_SQL)
-        run_migrations(conn)
-        conn.executescript(INDEXES_SQL)
-        conn.commit()
-        if self._mem_conn is None:
-            conn.close()
+        with self._lock:
+            self._conn.executescript(SCHEMA_SQL)
+            run_migrations(self._conn)
+            self._conn.executescript(INDEXES_SQL)
+            self._conn.commit()
+
+    # -------------------------------------------------------------------------
+    # Shared hydration helpers
+    # -------------------------------------------------------------------------
+    def _attach_checklists(self, services: Dict[int, Service], conn: sqlite3.Connection, service_ids: Optional[List[int]] = None) -> None:
+        """Hydrates ``checklists`` onto the given services using a single query."""
+        ids = list(services.keys()) if service_ids is None else service_ids
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        cur = conn.execute(
+            f"SELECT * FROM checklists WHERE service_id IN ({placeholders}) ORDER BY service_id ASC, id ASC",
+            ids,
+        )
+        for row in cur.fetchall():
+            svc = services.get(row["service_id"])
+            if svc is not None:
+                svc.checklists.append(self._row_to_checklist(row))
 
     # -------------------------------------------------------------------------
     # Target Operations
@@ -99,30 +159,28 @@ class DatabaseRepository:
         merge instead of silently re-scoping the host.
         """
         tags_json = json.dumps(tags or [])
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM targets WHERE ip = ?", (ip,))
-            row = cur.fetchone()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM targets WHERE ip = ?", (ip,)).fetchone()
+            now = datetime.now(timezone.utc)
             if row:
-                new_host = hostname if hostname else row["hostname"]
-                new_os = os if (os != "Unknown" and os) else row["os"]
-                new_tags = tags_json if tags is not None else row["tags"]
-                new_notes = notes if notes else row["notes"]
-                new_status = status.value if status != TargetStatus.DISCOVERED else row["status"]
-                new_in_scope = row["in_scope"] if in_scope is None else (1 if in_scope else 0)
-                cur.execute(
+                merged_hostname = hostname if hostname else row["hostname"]
+                merged_os = os if (os != "Unknown" and os) else row["os"]
+                merged_tags = tags_json if tags is not None else row["tags"]
+                merged_notes = notes if notes else row["notes"]
+                merged_status = status.value if status != TargetStatus.DISCOVERED else row["status"]
+                merged_in_scope = row["in_scope"] if in_scope is None else (1 if in_scope else 0)
+                conn.execute(
                     """
                     UPDATE targets
                     SET hostname = ?, os = ?, tags = ?, notes = ?, status = ?, in_scope = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (new_host, new_os, new_tags, new_notes, new_status, new_in_scope, row["id"]),
+                    (merged_hostname, merged_os, merged_tags, merged_notes, merged_status, merged_in_scope, row["id"]),
                 )
-                conn.commit()
                 target_id = row["id"]
+                created_at = _parse_dt(row["created_at"])
             else:
-                cur.execute(
+                cur = conn.execute(
                     """
                     INSERT INTO targets (ip, hostname, os, status, in_scope, tags, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -130,115 +188,99 @@ class DatabaseRepository:
                     (ip, hostname, os, status.value, 1 if (in_scope is None or in_scope) else 0, tags_json, notes),
                 )
                 target_id = cur.lastrowid
-                conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+                created_at = now
+                merged_hostname, merged_os, merged_tags = hostname, os, tags_json
+                merged_notes = notes
+                merged_status = status.value
+                merged_in_scope = 1 if (in_scope is None or in_scope) else 0
 
-        return self.get_target_by_id(target_id)  # type: ignore
+        try:
+            parsed_tags = json.loads(merged_tags)
+        except Exception:
+            parsed_tags = []
+        return Target(
+            id=target_id,
+            ip=ip,
+            hostname=merged_hostname or "",
+            os=merged_os or "Unknown",
+            status=TargetStatus(merged_status),
+            in_scope=bool(merged_in_scope),
+            tags=parsed_tags,
+            notes=merged_notes or "",
+            services=[],
+            created_at=created_at,
+            updated_at=now,
+        )
 
     def get_target_by_id(self, target_id: int) -> Optional[Target]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM targets WHERE id = ?", (target_id,))
-            row = cur.fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM targets WHERE id = ?", (target_id,)).fetchone()
             if not row:
                 return None
             target = self._row_to_target(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
-        target.services = self.get_services_by_target(target_id)
+            svc_rows = self._conn.execute(
+                "SELECT * FROM services WHERE target_id = ? ORDER BY port ASC",
+                (target_id,),
+            ).fetchall()
+            services_map: Dict[int, Service] = {}
+            for sr in svc_rows:
+                svc = self._row_to_service(sr)
+                services_map[svc.id] = svc  # type: ignore
+                target.services.append(svc)
+            self._attach_checklists(services_map, self._conn)
         return target
 
     def get_target_by_ip(self, ip: str) -> Optional[Target]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM targets WHERE ip = ?", (ip,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            target_id = row["id"]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
-
-        return self.get_target_by_id(target_id)
+        with self._lock:
+            row = self._conn.execute("SELECT id FROM targets WHERE ip = ?", (ip,)).fetchone()
+        return self.get_target_by_id(row["id"]) if row else None
 
     def list_targets(self) -> List[Target]:
         """Batch-fetches all targets, services, and checklists in O(1) database round-trips."""
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM targets ORDER BY ip ASC")
-            target_rows = cur.fetchall()
+        with self._lock:
+            target_rows = self._conn.execute("SELECT * FROM targets ORDER BY ip ASC").fetchall()
             if not target_rows:
                 return []
 
             targets_map: Dict[int, Target] = {r["id"]: self._row_to_target(r) for r in target_rows}
 
-            cur.execute("SELECT * FROM services ORDER BY target_id ASC, port ASC")
-            service_rows = cur.fetchall()
-            services_map: Dict[int, Service] = {r["id"]: self._row_to_service(r) for r in service_rows}
+            services_map: Dict[int, Service] = {}
+            for r in self._conn.execute("SELECT * FROM services ORDER BY target_id ASC, port ASC"):
+                svc = self._row_to_service(r)
+                services_map[r["id"]] = svc
+                t = targets_map.get(r["target_id"])
+                if t is not None:
+                    t.services.append(svc)
 
-            cur.execute("SELECT * FROM checklists ORDER BY service_id ASC, id ASC")
-            checklist_rows = cur.fetchall()
-            for cr in checklist_rows:
-                chk = self._row_to_checklist(cr)
-                if chk.service_id in services_map:
-                    services_map[chk.service_id].checklists.append(chk)
-
-            for svc in services_map.values():
-                if svc.target_id in targets_map:
-                    targets_map[svc.target_id].services.append(svc)
+            for cr in self._conn.execute("SELECT * FROM checklists ORDER BY service_id ASC, id ASC"):
+                svc = services_map.get(cr["service_id"])
+                if svc is not None:
+                    svc.checklists.append(self._row_to_checklist(cr))
 
             return list(targets_map.values())
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def update_target_status(self, target_id: int, status: TargetStatus) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 "UPDATE targets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status.value, target_id),
             )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def set_target_scope(self, target_id: int, in_scope: bool) -> bool:
         """Toggles the engagement scope flag for a host."""
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 "UPDATE targets SET in_scope = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (1 if in_scope else 0, target_id),
             )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def delete_target(self, target_id: int) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM targets WHERE id = ?", (target_id,))
-            conn.commit()
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM targets WHERE id = ?", (target_id,))
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Service Operations
@@ -255,102 +297,90 @@ class DatabaseRepository:
         status: ServiceStatus = ServiceStatus.UNTESTED,
         notes: str = "",
     ) -> Service:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            row = conn.execute(
                 "SELECT * FROM services WHERE target_id = ? AND port = ? AND protocol = ?",
                 (target_id, port, protocol),
-            )
-            row = cur.fetchone()
+            ).fetchone()
+            now = datetime.now(timezone.utc)
             if row:
-                new_name = name if name != "unknown" else row["name"]
-                new_product = product if product else row["product"]
-                new_version = version if version else row["version"]
-                new_banner = banner if banner else row["banner"]
-                cur.execute(
+                merged_name = name if name != "unknown" else row["name"]
+                merged_product = product if product else row["product"]
+                merged_version = version if version else row["version"]
+                merged_banner = banner if banner else row["banner"]
+                conn.execute(
                     """
                     UPDATE services
                     SET name = ?, product = ?, version = ?, banner = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
-                    (new_name, new_product, new_version, new_banner, row["id"]),
+                    (merged_name, merged_product, merged_version, merged_banner, row["id"]),
                 )
-                conn.commit()
                 service_id = row["id"]
+                created_at = _parse_dt(row["created_at"])
+                final_status = ServiceStatus(row["status"])
+                final_notes = row["notes"] or ""
             else:
-                cur.execute(
+                cur = conn.execute(
                     """
                     INSERT INTO services (target_id, port, protocol, name, product, version, banner, status, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        target_id,
-                        port,
-                        protocol,
-                        name,
-                        product,
-                        version,
-                        banner,
-                        status.value,
-                        notes,
-                    ),
+                    (target_id, port, protocol, name, product, version, banner, status.value, notes),
                 )
                 service_id = cur.lastrowid
-                conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+                created_at = now
+                merged_name, merged_product, merged_version, merged_banner = name, product, version, banner
+                final_status = status
+                final_notes = notes
 
-        return self.get_service_by_id(service_id)  # type: ignore
+        return Service(
+            id=service_id,
+            target_id=target_id,
+            port=port,
+            protocol=protocol,
+            name=merged_name or "unknown",
+            product=merged_product or "",
+            version=merged_version or "",
+            banner=merged_banner or "",
+            status=final_status,
+            notes=final_notes,
+            checklists=[],
+            created_at=created_at,
+            updated_at=now,
+        )
 
     def get_service_by_id(self, service_id: int) -> Optional[Service]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM services WHERE id = ?", (service_id,))
-            row = cur.fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
             if not row:
                 return None
             service = self._row_to_service(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
-
-        service.checklists = self.get_checklists_by_service(service_id)
+            self._attach_checklists({service.id: service}, self._conn)  # type: ignore
         return service
 
     def get_services_by_target(self, target_id: int) -> List[Service]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 "SELECT * FROM services WHERE target_id = ? ORDER BY port ASC",
                 (target_id,),
-            )
-            rows = cur.fetchall()
-            services = [self._row_to_service(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
-
-        for s in services:
-            s.checklists = self.get_checklists_by_service(s.id)  # type: ignore
-        return services
+            ).fetchall()
+            services_map: Dict[int, Service] = {}
+            ordered: List[Service] = []
+            for r in rows:
+                svc = self._row_to_service(r)
+                services_map[svc.id] = svc  # type: ignore
+                ordered.append(svc)
+            self._attach_checklists(services_map, self._conn)
+        return ordered
 
     def update_service_status(self, service_id: int, status: ServiceStatus) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 "UPDATE services SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status.value, service_id),
             )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Checklist Operations
@@ -369,16 +399,14 @@ class DatabaseRepository:
         output_snippet: str = "",
     ) -> ChecklistItem:
         cve_json = json.dumps(cve_refs or [])
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            row = conn.execute(
                 "SELECT * FROM checklists WHERE service_id = ? AND title = ?",
                 (service_id, title),
-            )
-            row = cur.fetchone()
+            ).fetchone()
+            now = datetime.now(timezone.utc)
             if row:
-                cur.execute(
+                conn.execute(
                     """
                     UPDATE checklists
                     SET category = ?, description = ?, command_template = ?, severity = ?, remediation = ?, cve_refs = ?, updated_at = CURRENT_TIMESTAMP
@@ -386,10 +414,12 @@ class DatabaseRepository:
                     """,
                     (category, description, command_template, severity.value, remediation, cve_json, row["id"]),
                 )
-                conn.commit()
-                chk_id = row["id"]
+                item_id = row["id"]
+                created_at = _parse_dt(row["created_at"])
+                final_status = ChecklistStatus(row["status"])
+                final_snippet = row["output_snippet"] or ""
             else:
-                cur.execute(
+                cur = conn.execute(
                     """
                     INSERT INTO checklists (service_id, category, title, description, command_template, status, severity, remediation, cve_refs, output_snippet)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -407,40 +437,39 @@ class DatabaseRepository:
                         output_snippet,
                     ),
                 )
-                chk_id = cur.lastrowid
-                conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+                item_id = cur.lastrowid
+                created_at = now
+                final_status = status
+                final_snippet = output_snippet
 
-        return self.get_checklist_by_id(chk_id)  # type: ignore
+        return ChecklistItem(
+            id=item_id,
+            service_id=service_id,
+            category=category,
+            title=title,
+            description=description,
+            command_template=command_template,
+            status=final_status,
+            severity=severity,
+            remediation=remediation,
+            cve_refs=cve_refs or [],
+            output_snippet=final_snippet,
+            created_at=created_at,
+            updated_at=now,
+        )
 
     def get_checklist_by_id(self, item_id: int) -> Optional[ChecklistItem]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM checklists WHERE id = ?", (item_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            return self._row_to_checklist(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM checklists WHERE id = ?", (item_id,)).fetchone()
+            return self._row_to_checklist(row) if row else None
 
     def get_checklists_by_service(self, service_id: int) -> List[ChecklistItem]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 "SELECT * FROM checklists WHERE service_id = ? ORDER BY id ASC",
                 (service_id,),
-            )
-            rows = cur.fetchall()
+            ).fetchall()
             return [self._row_to_checklist(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def update_checklist_status(
         self,
@@ -448,11 +477,9 @@ class DatabaseRepository:
         status: ChecklistStatus,
         output_snippet: Optional[str] = None,
     ) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
+        with self.transaction() as conn:
             if output_snippet is not None:
-                cur.execute(
+                cur = conn.execute(
                     """
                     UPDATE checklists
                     SET status = ?, output_snippet = ?, updated_at = CURRENT_TIMESTAMP
@@ -461,7 +488,7 @@ class DatabaseRepository:
                     (status.value, output_snippet, item_id),
                 )
             else:
-                cur.execute(
+                cur = conn.execute(
                     """
                     UPDATE checklists
                     SET status = ?, updated_at = CURRENT_TIMESTAMP
@@ -469,11 +496,7 @@ class DatabaseRepository:
                     """,
                     (status.value, item_id),
                 )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Lead / Hypothesis Operations
@@ -487,10 +510,8 @@ class DatabaseRepository:
         status: LeadStatus = LeadStatus.BACKLOG,
         target_id: Optional[int] = None,
     ) -> Lead:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 """
                 INSERT INTO leads (target_id, title, description, priority, severity, status)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -498,18 +519,25 @@ class DatabaseRepository:
                 (target_id, title, description, priority.value, severity.value, status.value),
             )
             lead_id = cur.lastrowid
-            conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+            target_ip: Optional[str] = None
+            if target_id is not None:
+                t_row = conn.execute("SELECT ip FROM targets WHERE id = ?", (target_id,)).fetchone()
+                target_ip = t_row["ip"] if t_row else None
 
-        return self.get_lead_by_id(lead_id)  # type: ignore
+        return Lead(
+            id=lead_id,
+            target_id=target_id,
+            target_ip=target_ip,
+            title=title,
+            description=description,
+            priority=priority,
+            severity=severity,
+            status=status,
+        )
 
     def get_lead_by_id(self, lead_id: int) -> Optional[Lead]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            row = self._conn.execute(
                 """
                 SELECT leads.*, targets.ip as target_ip
                 FROM leads
@@ -517,21 +545,13 @@ class DatabaseRepository:
                 WHERE leads.id = ?
                 """,
                 (lead_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            return self._row_to_lead(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+            ).fetchone()
+            return self._row_to_lead(row) if row else None
 
     def list_leads(self, target_id: Optional[int] = None) -> List[Lead]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
+        with self._lock:
             if target_id:
-                cur.execute(
+                rows = self._conn.execute(
                     """
                     SELECT leads.*, targets.ip as target_ip
                     FROM leads
@@ -540,46 +560,30 @@ class DatabaseRepository:
                     ORDER BY leads.created_at DESC
                     """,
                     (target_id,),
-                )
+                ).fetchall()
             else:
-                cur.execute(
+                rows = self._conn.execute(
                     """
                     SELECT leads.*, targets.ip as target_ip
                     FROM leads
                     LEFT JOIN targets ON leads.target_id = targets.id
                     ORDER BY leads.created_at DESC
                     """
-                )
-            rows = cur.fetchall()
+                ).fetchall()
             return [self._row_to_lead(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def update_lead_status(self, lead_id: int, status: LeadStatus) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 "UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status.value, lead_id),
             )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def delete_lead(self, lead_id: int) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
-            conn.commit()
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Credential & Lateral Movement Matrix Operations
@@ -594,48 +598,52 @@ class DatabaseRepository:
         target_id: Optional[int] = None,
         notes: str = "",
     ) -> Credential:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            row = conn.execute(
                 """
-                SELECT id FROM credentials
+                SELECT id, tested_targets FROM credentials
                 WHERE username = ? AND secret = ? AND domain = ?
                 """,
                 (username, secret, domain),
-            )
-            row = cur.fetchone()
+            ).fetchone()
+            now = datetime.now(timezone.utc)
+            target_ip: Optional[str] = None
+            if target_id is not None:
+                t_row = conn.execute("SELECT ip FROM targets WHERE id = ?", (target_id,)).fetchone()
+                target_ip = t_row["ip"] if t_row else None
             if row:
                 cred_id = row["id"]
+                try:
+                    tested_targets = json.loads(row["tested_targets"]) if row["tested_targets"] else {}
+                except Exception:
+                    tested_targets = {}
             else:
-                cur.execute(
+                cur = conn.execute(
                     """
                     INSERT INTO credentials (target_id, username, secret, cred_type, domain, service_scope, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        target_id,
-                        username,
-                        secret,
-                        cred_type.value,
-                        domain,
-                        service_scope,
-                        notes,
-                    ),
+                    (target_id, username, secret, cred_type.value, domain, service_scope, notes),
                 )
                 cred_id = cur.lastrowid
-                conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+                tested_targets = {}
 
-        return self.get_credential_by_id(cred_id)  # type: ignore
+        return Credential(
+            id=cred_id,
+            target_id=target_id,
+            target_ip=target_ip,
+            username=username,
+            secret=secret,
+            cred_type=cred_type,
+            domain=domain,
+            service_scope=service_scope,
+            tested_targets=tested_targets,
+            notes=notes,
+        )
 
     def get_credential_by_id(self, cred_id: int) -> Optional[Credential]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            row = self._conn.execute(
                 """
                 SELECT credentials.*, targets.ip as target_ip
                 FROM credentials
@@ -643,32 +651,20 @@ class DatabaseRepository:
                 WHERE credentials.id = ?
                 """,
                 (cred_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            return self._row_to_credential(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+            ).fetchone()
+            return self._row_to_credential(row) if row else None
 
     def list_credentials(self) -> List[Credential]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 """
                 SELECT credentials.*, targets.ip as target_ip
                 FROM credentials
                 LEFT JOIN targets ON credentials.target_id = targets.id
                 ORDER BY credentials.created_at DESC
                 """
-            )
-            rows = cur.fetchall()
+            ).fetchall()
             return [self._row_to_credential(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def record_credential_test(
         self,
@@ -679,11 +675,8 @@ class DatabaseRepository:
         admin: bool = False,
     ) -> bool:
         """Atomically records whether a credential was valid on a specific target."""
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT tested_targets FROM credentials WHERE id = ?", (cred_id,))
-            row = cur.fetchone()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT tested_targets FROM credentials WHERE id = ?", (cred_id,)).fetchone()
             if not row:
                 return False
 
@@ -705,7 +698,7 @@ class DatabaseRepository:
             if service:
                 tested[f"{target_ip}:{service}"] = entry
 
-            cur.execute(
+            conn.execute(
                 """
                 UPDATE credentials
                 SET tested_targets = ?, updated_at = CURRENT_TIMESTAMP
@@ -713,18 +706,12 @@ class DatabaseRepository:
                 """,
                 (json.dumps(tested), cred_id),
             )
-            conn.commit()
             return True
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def update_credential_tested_targets(self, cred_id: int, tested_targets: Dict[str, Any]) -> bool:
         """Replaces the full tested-targets map (used to reset lifecycle state)."""
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 """
                 UPDATE credentials
                 SET tested_targets = ?, updated_at = CURRENT_TIMESTAMP
@@ -732,22 +719,12 @@ class DatabaseRepository:
                 """,
                 (json.dumps(tested_targets), cred_id),
             )
-            conn.commit()
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def delete_credential(self, cred_id: int) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
-            conn.commit()
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM credentials WHERE id = ?", (cred_id,))
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Evidence & Proof Operations
@@ -764,10 +741,8 @@ class DatabaseRepository:
         flag_hash: str = "",
         screenshot_path: str = "",
     ) -> Evidence:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 """
                 INSERT INTO evidence (target_id, service_id, checklist_id, proof_type, title, command, output, flag_hash, screenshot_path)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -785,18 +760,23 @@ class DatabaseRepository:
                 ),
             )
             evidence_id = cur.lastrowid
-            conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
-        return self.get_evidence_by_id(evidence_id)  # type: ignore
+        return Evidence(
+            id=evidence_id,
+            target_id=target_id,
+            service_id=service_id,
+            checklist_id=checklist_id,
+            proof_type=proof_type,
+            title=title,
+            command=command,
+            output=output,
+            flag_hash=flag_hash,
+            screenshot_path=screenshot_path,
+        )
 
     def get_evidence_by_id(self, evidence_id: int) -> Optional[Evidence]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self._lock:
+            row = self._conn.execute(
                 """
                 SELECT evidence.*, targets.ip as target_ip
                 FROM evidence
@@ -804,21 +784,13 @@ class DatabaseRepository:
                 WHERE evidence.id = ?
                 """,
                 (evidence_id,),
-            )
-            row = cur.fetchone()
-            if not row:
-                return None
-            return self._row_to_evidence(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+            ).fetchone()
+            return self._row_to_evidence(row) if row else None
 
     def list_evidence(self, target_id: Optional[int] = None) -> List[Evidence]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
+        with self._lock:
             if target_id:
-                cur.execute(
+                rows = self._conn.execute(
                     """
                     SELECT evidence.*, targets.ip as target_ip
                     FROM evidence
@@ -827,32 +799,22 @@ class DatabaseRepository:
                     ORDER BY evidence.created_at DESC
                     """,
                     (target_id,),
-                )
+                ).fetchall()
             else:
-                cur.execute(
+                rows = self._conn.execute(
                     """
                     SELECT evidence.*, targets.ip as target_ip
                     FROM evidence
                     LEFT JOIN targets ON evidence.target_id = targets.id
                     ORDER BY evidence.created_at DESC
                     """
-                )
-            rows = cur.fetchall()
+                ).fetchall()
             return [self._row_to_evidence(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def delete_evidence(self, evidence_id: int) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM evidence WHERE id = ?", (evidence_id,))
-            conn.commit()
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM evidence WHERE id = ?", (evidence_id,))
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Pivot Route Operations
@@ -866,10 +828,8 @@ class DatabaseRepository:
         local_bind: str = "127.0.0.1:1080",
         notes: str = "",
     ) -> PivotRoute:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute(
+        with self.transaction() as conn:
+            cur = conn.execute(
                 """
                 INSERT INTO pivot_routes (name, jump_host_ip, target_subnet, tunnel_type, local_bind, notes)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -877,101 +837,66 @@ class DatabaseRepository:
                 (name, jump_host_ip, target_subnet, tunnel_type, local_bind, notes),
             )
             route_id = cur.lastrowid
-            conn.commit()
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
-        return self.get_pivot_route_by_id(route_id)  # type: ignore
+        return PivotRoute(
+            id=route_id,
+            name=name,
+            jump_host_ip=jump_host_ip,
+            target_subnet=target_subnet,
+            tunnel_type=tunnel_type,
+            local_bind=local_bind,
+            notes=notes,
+        )
 
     def get_pivot_route_by_id(self, route_id: int) -> Optional[PivotRoute]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM pivot_routes WHERE id = ?", (route_id,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            return self._row_to_pivot_route(row)
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM pivot_routes WHERE id = ?", (route_id,)).fetchone()
+            return self._row_to_pivot_route(row) if row else None
 
     def list_pivot_routes(self) -> List[PivotRoute]:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM pivot_routes ORDER BY created_at DESC")
-            rows = cur.fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM pivot_routes ORDER BY created_at DESC").fetchall()
             return [self._row_to_pivot_route(r) for r in rows]
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     def delete_pivot_route(self, route_id: int) -> bool:
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("DELETE FROM pivot_routes WHERE id = ?", (route_id,))
-            conn.commit()
+        with self.transaction() as conn:
+            cur = conn.execute("DELETE FROM pivot_routes WHERE id = ?", (route_id,))
             return cur.rowcount > 0
-        finally:
-            if self._mem_conn is None:
-                conn.close()
 
     # -------------------------------------------------------------------------
     # Engagement Statistics
     # -------------------------------------------------------------------------
     def get_engagement_stats(self) -> Dict[str, Any]:
-        """Calculates global engagement metrics across all targets."""
-        conn = self.get_connection()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM targets")
-            total_targets = cur.fetchone()[0]
+        """Calculates global engagement metrics in a single query."""
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM targets) AS total_targets,
+                    (SELECT COUNT(*) FROM targets WHERE status = 'pwned') AS pwned_targets,
+                    (SELECT COUNT(*) FROM targets WHERE status = 'foothold') AS foothold_targets,
+                    (SELECT COUNT(*) FROM services) AS total_services,
+                    (SELECT COUNT(*) FROM checklists) AS total_checks,
+                    (SELECT COUNT(*) FROM checklists WHERE status IN ('checked', 'finding')) AS completed_checks,
+                    (SELECT COUNT(*) FROM checklists WHERE status = 'finding') AS total_findings,
+                    (SELECT COUNT(*) FROM credentials) AS total_credentials,
+                    (SELECT COUNT(*) FROM evidence WHERE flag_hash != '') AS captured_flags,
+                    (SELECT COUNT(*) FROM leads WHERE status IN ('backlog', 'in_progress')) AS active_leads
+                """
+            ).fetchone()
 
-            cur.execute("SELECT COUNT(*) FROM targets WHERE status = 'pwned'")
-            pwned_targets = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM targets WHERE status = 'foothold'")
-            foothold_targets = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM services")
-            total_services = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM checklists")
-            total_checks = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM checklists WHERE status IN ('checked', 'finding')")
-            completed_checks = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM checklists WHERE status = 'finding'")
-            total_findings = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM credentials")
-            total_credentials = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM evidence WHERE flag_hash != ''")
-            captured_flags = cur.fetchone()[0]
-
-            cur.execute("SELECT COUNT(*) FROM leads WHERE status IN ('backlog', 'in_progress')")
-            active_leads = cur.fetchone()[0]
-
-            return {
-                "total_targets": total_targets,
-                "pwned_targets": pwned_targets,
-                "foothold_targets": foothold_targets,
-                "total_services": total_services,
-                "total_checks": total_checks,
-                "completed_checks": completed_checks,
-                "total_findings": total_findings,
-                "total_credentials": total_credentials,
-                "captured_flags": captured_flags,
-                "active_leads": active_leads,
-            }
-        finally:
-            if self._mem_conn is None:
-                conn.close()
+        return {
+            "total_targets": row["total_targets"],
+            "pwned_targets": row["pwned_targets"],
+            "foothold_targets": row["foothold_targets"],
+            "total_services": row["total_services"],
+            "total_checks": row["total_checks"],
+            "completed_checks": row["completed_checks"],
+            "total_findings": row["total_findings"],
+            "total_credentials": row["total_credentials"],
+            "captured_flags": row["captured_flags"],
+            "active_leads": row["active_leads"],
+        }
 
     def get_stats(self) -> Dict[str, Any]:
         """Alias for get_engagement_stats for backward compatibility."""
