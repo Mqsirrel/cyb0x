@@ -7,26 +7,14 @@
 
 > **The keyboard-driven assessment state machine, methodology copilot, and evidence engine built for penetration testers, certification candidates (eJPTv2, OSCP, CPTS, PNPT), and CTF players.**
 
-```
-┌── SYNAPSE v1.0 [Workspace: oscp-ad-set] ────────────────────────────────────────────────────────┐
-│ 🎯 Targets: 4 (Pwned: 1 | Foothold: 1) │ ⚡ Services: 14 │ ✔ Checks: 12/56 │ 🔑 Creds: 5 │ 🚩 Flags: 2 │
-├────────────────────────────────────────┬────────────────────────────────────────────────────────┤
-│ Targets & Attack Surface               │ Service: 445/tcp — SMB on 10.10.11.15 (DC01)           │
-│  ▼ [green]✔ PWNED[/green] 10.10.11.10 (web01)   │ Product: Windows Server 2019 Standard 17763            │
-│     ● 22/tcp  ssh (OpenSSH 8.2p1)      │                                                        │
-│     ● 80/tcp  http (Apache 2.4.41)     │ Action Items & Command Recipes:                        │
-│     ● 8080/tcp http (Tomcat 9.0)       │  [green]✔ CHECKED [/green] Anonymous / Guest Share Access              │
-│  ▶▼ [magenta]★ FOOTHOLD[/magenta] 10.10.11.15 (DC01)  │    Recipe: `netexec smb 10.10.11.15 -u '' -p '' --shares`│
-│     ● 88/tcp  kerberos                 │  [yellow]⟳ RUNNING [/yellow] RID Cycling & User Enum                   │
-│     ● 389/tcp ldap                     │    Recipe: `netexec smb 10.10.11.15 -u 'guest' -p '' --rid`│
-│    ▶● 445/tcp smb                      │  [bold red]★ FINDING [/bold red] AD CS Certificate Template Audit (ESC1) │
-│     ● 5985/tcp winrm                   │    Recipe: `certipy find -u 'jsmith@CORP.LOCAL' -p 'Pass'`│
-│   ○ 10.10.11.20 (sql01)                │  [white]  [ ] TODO  [/white] Password Spray Discovered Credentials     │
-├────────────────────────────────────────┴────────────────────────────────────────────────────────┤
-│ [1] Workbench  [2] Cred Vault  [3] Leads Board  [4] Evidence Ledger  [5] Pivot Routes  [x] Export│
-│ [a] Add Target │ [c] Add Cred │ [l] Add Lead │ [e] Proof Flag │ [r] Run Recipe │ [Space] Cycle │
-└─────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="assets/synapse_workbench.png" alt="Synapse Workbench" width="90%">
+</p>
+
+<p align="center">
+  <img src="assets/synapse_creds.png" alt="Synapse Credential Vault" width="45%">
+  <img src="assets/synapse_leads.png" alt="Synapse Leads Board" width="45%">
+</p>
 
 ---
 
