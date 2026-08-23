@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -sV -sC -p 21,22,80,88,135,139,389,445,1433,3389,5985 10.10.11.10,10.10.11.15,10.10.11.20" start="1600000000">
+
+<host starttime="1600000000" endtime="1600000015">
+  <status state="up"/>
+  <address addr="10.10.11.10" addrtype="ipv4"/>
+  <hostnames><hostname name="web01.corp.local" type="user"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" version="8.2p1 Ubuntu 4ubuntu0.5"/></port>
+    <port protocol="tcp" portid="80"><state state="open"/><service name="http" product="Apache httpd" version="2.4.41"/><script id="http-title" output="Corporate Internal Portal - Login"/></port>
+    <port protocol="tcp" portid="8080"><state state="open"/><service name="http" product="Apache Tomcat" version="9.0.41"/><script id="http-title" output="Tomcat Manager Application"/></port>
+  </ports>
+  <os><osmatch name="Linux 5.4 - 5.8" accuracy="96"/></os>
+</host>
+
+<host starttime="1600000000" endtime="1600000015">
+  <status state="up"/>
+  <address addr="10.10.11.15" addrtype="ipv4"/>
+  <hostnames><hostname name="dc01.corp.local" type="user"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="53"><state state="open"/><service name="domain" product="Simple DNS Plus"/></port>
+    <port protocol="tcp" portid="88"><state state="open"/><service name="kerberos-sec" product="Microsoft Windows Kerberos"/></port>
+    <port protocol="tcp" portid="135"><state state="open"/><service name="msrpc" product="Microsoft Windows RPC"/></port>
+    <port protocol="tcp" portid="139"><state state="open"/><service name="netbios-ssn" product="Microsoft Windows netbios-ssn"/></port>
+    <port protocol="tcp" portid="389"><state state="open"/><service name="ldap" product="Microsoft Windows Active Directory LDAP"/></port>
+    <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds" product="Windows Server 2019 Standard 17763"/></port>
+    <port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server" product="Microsoft Terminal Services"/></port>
+    <port protocol="tcp" portid="5985"><state state="open"/><service name="wsman" product="Microsoft HTTPAPI httpd 2.0"/></port>
+  </ports>
+  <os><osmatch name="Windows Server 2019" accuracy="98"/></os>
+</host>
+
+<host starttime="1600000000" endtime="1600000015">
+  <status state="up"/>
+  <address addr="10.10.11.20" addrtype="ipv4"/>
+  <hostnames><hostname name="sql01.corp.local" type="user"/></hostnames>
+  <ports>
+    <port protocol="tcp" portid="1433"><state state="open"/><service name="ms-sql-s" product="Microsoft SQL Server 2017 14.00.1000"/></port>
+    <port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds" product="Windows Server 2016"/></port>
+    <port protocol="tcp" portid="5985"><state state="open"/><service name="wsman" product="Microsoft HTTPAPI httpd 2.0"/></port>
+  </ports>
+  <os><osmatch name="Windows Server 2016" accuracy="95"/></os>
+</host>
+
+</nmaprun>

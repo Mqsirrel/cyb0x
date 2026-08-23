@@ -1,0 +1,6 @@
+SMB         10.10.11.15     445    DC01             [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:CORP.LOCAL) (signing:True) (SMBv1:False)
+SMB         10.10.11.15     445    DC01             [+] CORP.LOCAL\guest: (Pwn3d!)
+SMB         10.10.11.15     445    DC01             [+] CORP.LOCAL\jsmith:Welcome2023!
+SMB         10.10.11.15     445    DC01             [+] CORP.LOCAL\administrator:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0 (Pwn3d!)
+WINRM       10.10.11.15    5985    DC01             [+] CORP.LOCAL\administrator:31d6cfe0d16ae931b73c59d7e0c089c0 (Pwn3d!)
+MSSQL       10.10.11.20    1433    SQL01            [+] CORP.LOCAL\sql_svc:DatabasePassword123!
