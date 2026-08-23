@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Optional
 from rich.markup import escape
 from textual.app import ComposeResult
-from textual.containers import Vertical, Horizontal, ScrollableContainer
-from textual.widgets import Static, DataTable, Label, Button
+from textual.containers import Vertical
+from textual.widgets import DataTable, Static
 
-from synapse.models import Service, Target, ChecklistItem, ChecklistStatus
+from synapse.models import ChecklistItem, ChecklistStatus, Service, Target
 
 
 class ServiceDetailWidget(Vertical):
@@ -22,7 +22,7 @@ class ServiceDetailWidget(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("[bold cyan]Service & Methodology Checklist[/bold cyan]", id="service-header")
         yield Static("", id="service-info")
-        yield Static("[bold yellow]Interactive Methodology Action Items (Space/Enter to cycle status, 'r' to run recipe):[/bold yellow]", id="checklist-title")
+        yield Static("[bold yellow]Interactive Action Items (Space to cycle status, 'r' to execute recipe):[/bold yellow]", id="checklist-title")
         table = DataTable(id="checklist-table", cursor_type="row")
         table.add_columns("Status", "Category", "Action Item / Check", "Command Recipe")
         yield table
@@ -43,8 +43,8 @@ class ServiceDetailWidget(Vertical):
         safe_host = escape(target.hostname or "None")
         banner_snippet = f"\n[dim]Banner / Script Output:[/dim]\n{escape(service.banner[:300])}" if service.banner else ""
         info.update(
-            f"[bold]Product/Version:[/bold] {safe_prod_ver} | [bold]Status:[/bold] [{service.status.value.upper()}]\n"
-            f"[bold]Target OS:[/bold] {safe_os} | [bold]Hostname:[/bold] {safe_host}"
+            f"[bold]Product/Version:[/bold] {safe_prod_ver} │ [bold]Status:[/bold] [{service.status.value.upper()}]\n"
+            f"[bold]Target OS:[/bold] {safe_os} │ [bold]Hostname:[/bold] {safe_host}"
             f"{banner_snippet}"
         )
 
@@ -52,19 +52,19 @@ class ServiceDetailWidget(Vertical):
         table.clear()
 
         status_styles = {
-            ChecklistStatus.TODO: "[white]  [ ] TODO  [/white]",
-            ChecklistStatus.RUNNING: "[yellow] ⟳ RUNNING [/yellow]",
-            ChecklistStatus.CHECKED: "[green] ✔ CHECKED [/green]",
-            ChecklistStatus.FINDING: "[bold red] ★ FINDING [/bold red]",
-            ChecklistStatus.DEAD_END: "[dim] ✖ DEAD-END[/dim]",
+            ChecklistStatus.TODO: "[dim white on #262626]   [ ] TODO  [/]",
+            ChecklistStatus.RUNNING: "[bold yellow on #3b3014] ⟳ RUNNING [/]",
+            ChecklistStatus.CHECKED: "[bold green on #143520] ✔ CHECKED [/]",
+            ChecklistStatus.FINDING: "[bold bright_red on #421414] ★ FINDING [/]",
+            ChecklistStatus.DEAD_END: "[dim white on #1a1a1a] ✖ DEAD-END[/]",
         }
 
         for item in service.checklists:
-            st = status_styles.get(item.status, "[ ] TODO")
-            cmd_preview = item.command_template if len(item.command_template) <= 50 else item.command_template[:47] + "..."
+            st = status_styles.get(item.status, "[dim] [ ] TODO [/dim]")
+            cmd_preview = item.command_template if len(item.command_template) <= 55 else item.command_template[:52] + "..."
             table.add_row(
                 st,
-                escape(item.category),
+                escape(item.category.upper()),
                 escape(item.title),
                 f"[cyan]{escape(cmd_preview)}[/cyan]",
                 key=str(item.id),

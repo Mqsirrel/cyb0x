@@ -7,6 +7,7 @@ from typing import Optional
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import (
     DataTable,
     Footer,
@@ -41,6 +42,7 @@ from synapse.tui.modals.add_evidence_modal import AddEvidenceModal
 from synapse.tui.modals.add_lead_modal import AddLeadModal
 from synapse.tui.modals.add_target_modal import AddTargetModal
 from synapse.tui.modals.export_modal import ExportModal
+from synapse.tui.modals.help_modal import HelpModal
 from synapse.tui.modals.runner_modal import RunnerModal
 from synapse.tui.widgets.cred_matrix import CredentialMatrixWidget
 from synapse.tui.widgets.evidence_view import EvidenceViewWidget
@@ -75,10 +77,11 @@ class SynapseTUI(App):
     #stats-banner {
         dock: top;
         height: 1;
-        background: $primary-darken-3;
+        background: $surface-darken-1;
         color: $text;
         padding: 0 1;
         text-style: bold;
+        border-bottom: solid $primary-darken-2;
     }
     TargetTreeWidget {
         background: transparent;
@@ -108,6 +111,8 @@ class SynapseTUI(App):
         Binding("r", "run_recipe", "Run Recipe", priority=False),
         Binding("space", "toggle_status", "Toggle Status", priority=False),
         Binding("x", "export_report", "Export Report", priority=False),
+        Binding("question_mark", "show_help", "Help (?)", priority=False),
+        Binding("f1", "show_help", "Help (F1)", priority=False, show=False),
         Binding("1", "switch_tab('tab-workbench')", "Workbench", show=False),
         Binding("2", "switch_tab('tab-creds')", "Creds", show=False),
         Binding("3", "switch_tab('tab-leads')", "Leads", show=False),
@@ -154,34 +159,36 @@ class SynapseTUI(App):
     def update_stats_banner(self) -> None:
         stats = self.repo.get_stats()
         banner = self.query_one("#stats-banner", Static)
-        pwn_str = f"[bold green]{stats['pwned_targets']}[/bold green]" if stats["pwned_targets"] > 0 else "0"
-        flag_str = f"[bold yellow]{stats['captured_flags']}[/bold yellow]" if stats["captured_flags"] > 0 else "0"
-        banner.update(
-            f"🎯 Targets: [bold]{stats['total_targets']}[/bold] (Pwned: {pwn_str} | Foothold: {stats['foothold_targets']}) │ "
-            f"⚡ Services: [bold]{stats['total_services']}[/bold] │ "
-            f"✔ Checks: [bold green]{stats['completed_checks']}[/bold green] (Findings: [bold red]{stats['total_findings']}[/bold red]) │ "
-            f"🔑 Creds: [bold cyan]{stats['total_credentials']}[/bold cyan] │ "
-            f"🚩 Proof Flags: {flag_str} │ "
-            f"💡 Active Leads: [bold]{stats['active_leads']}[/bold]"
+        pwn_str = f"[bold green]{stats['pwned_targets']}[/bold green]"
+        foothold_str = f"[magenta]{stats['foothold_targets']}[/magenta]"
+        flag_str = f"[bold yellow]{stats['captured_flags']}[/bold yellow]"
+        finding_str = f"[bold red]{stats['total_findings']}[/bold red]"
+        checks_str = f"[cyan]{stats['completed_checks']}/{stats['total_checks']}[/cyan]"
+
+        banner_text = (
+            f" [bold white]🎯 Targets:[/bold white] {stats['total_targets']} (Pwned: {pwn_str} │ Foothold: {foothold_str}) │ "
+            f"[bold white]⚡ Services:[/bold white] {stats['total_services']} │ "
+            f"[bold white]✔ Checks:[/bold white] {checks_str} │ "
+            f"[bold white]★ Findings:[/bold white] {finding_str} │ "
+            f"[bold white]🔑 Creds:[/bold white] {stats['total_credentials']} │ "
+            f"[bold white]🚩 Flags:[/bold white] {flag_str} │ "
+            f"[bold white]💡 Leads:[/bold white] {stats['active_leads']}"
         )
+        banner.update(banner_text)
 
     def refresh_all_views(self) -> None:
         targets = self.repo.list_targets()
         self.query_one("#target-tree", TargetTreeWidget).populate(targets)
 
-        # Refresh Creds
         creds = self.repo.list_credentials()
         self.query_one("#cred-matrix", CredentialMatrixWidget).populate(creds)
 
-        # Refresh Leads
         leads = self.repo.list_leads()
         self.query_one("#lead-board", LeadBoardWidget).populate(leads)
 
-        # Refresh Evidence
         evidence = self.repo.list_evidence()
         self.query_one("#evidence-view", EvidenceViewWidget).populate(evidence)
 
-        # Refresh Pivots
         pivots = self.repo.list_pivot_routes()
         self.query_one("#pivot-view", PivotViewWidget).populate(pivots)
 
@@ -192,33 +199,32 @@ class SynapseTUI(App):
         if not node_data:
             return
 
-        detail = self.query_one("#service-detail", ServiceDetailWidget)
+        detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
 
         if node_data["type"] == "service":
             svc: Service = node_data["service"]
-            t_id: int = node_data["target_id"]
-            target = self.repo.get_target_by_id(t_id)
-            if target:
-                self.selected_target = target
-                self.selected_service = svc
-                detail.display_service(target, svc)
+            target: Target = self.repo.get_target_by_id(node_data["target_id"])  # type: ignore
+            self.selected_target = target
+            self.selected_service = svc
+            detail_widget.display_service(target, svc)
 
         elif node_data["type"] == "target":
             target: Target = node_data["target"]
             self.selected_target = target
             self.selected_service = None
             if target.services:
-                first_svc = target.services[0]
-                self.selected_service = first_svc
-                detail.display_service(target, first_svc)
+                self.selected_service = target.services[0]
+                detail_widget.display_service(target, target.services[0])
             else:
-                detail.display_empty(f"Target {target.ip} selected. No open ports recorded yet. Press 'a' to add services.")
+                detail_widget.display_empty(f"Target {target.ip} has no open services recorded.")
 
-    # -------------------------------------------------------------------------
-    # Action Handlers
-    # -------------------------------------------------------------------------
     def action_switch_tab(self, tab_id: str) -> None:
         self.query_one("#tabs", TabbedContent).active = tab_id
+
+    def action_show_help(self) -> None:
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.push_screen(HelpModal())
 
     def action_add_target(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -230,33 +236,21 @@ class SynapseTUI(App):
             t = self.repo.add_or_get_target(
                 ip=res["ip"],
                 hostname=res.get("hostname", ""),
-                os=res.get("os", "Linux"),
-                status=TargetStatus.DISCOVERED,
+                os=res.get("os", "Unknown"),
             )
-            for port in res.get("ports", []):
-                svc = self.repo.add_or_update_service(
-                    target_id=t.id,  # type: ignore
-                    port=port,
-                    protocol="tcp",
-                    name="unknown",
-                )
-                # Populate default methodology checklists
-                raw_checks = self.methodology.get_checklists_for_service(svc)
-                for rc in raw_checks:
-                    rendered_cmd = self.methodology.render_command(
-                        rc.get("command_template", ""), t, svc
-                    )
+            for p in res.get("ports", []):
+                svc = self.repo.add_or_update_service(target_id=t.id, port=p)
+                for rc in self.methodology.get_checklists_for_service(svc):
+                    cmd = self.methodology.render_command(rc.get("command_template", ""), t, svc)
                     self.repo.add_checklist_item(
-                        service_id=svc.id,  # type: ignore
+                        service_id=svc.id,
                         category=rc.get("category", "enum"),
                         title=rc.get("title", ""),
                         description=rc.get("description", ""),
-                        command_template=rendered_cmd,
-                        status=ChecklistStatus.TODO,
+                        command_template=cmd,
                     )
-
             self.refresh_all_views()
-            self.notify(f"Added target {t.ip} with {len(res.get('ports', []))} ports", title="Target Added")
+            self.notify(f"Target {t.ip} added successfully", title="Target Added")
 
         self.push_screen(AddTargetModal(), on_result)
 
@@ -381,7 +375,7 @@ class SynapseTUI(App):
 
         if tabs.active == "tab-workbench":
             table = self.query_one("#checklist-table", DataTable)
-            if table.cursor_row is None:
+            if table.row_count == 0 or table.cursor_row is None:
                 return
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             try:
@@ -420,7 +414,7 @@ class SynapseTUI(App):
 
         elif tabs.active == "tab-leads":
             table = self.query_one("#lead-table", DataTable)
-            if table.cursor_row is None:
+            if table.row_count == 0 or table.cursor_row is None:
                 return
             row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
             try:
@@ -448,7 +442,7 @@ class SynapseTUI(App):
             if not res:
                 return
             fmt = res["format"]
-            out_path = Path(res["path"]).expanduser().resolve()
+            out_path = Path(res["output_path"]).expanduser().resolve()
 
             if fmt == "markdown":
                 report_md = export_markdown_report(self.repo)

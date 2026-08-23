@@ -6,7 +6,7 @@ from typing import List
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static, DataTable
+from textual.widgets import DataTable, Static
 
 from synapse.models import Lead, LeadPriority, LeadStatus
 
@@ -26,29 +26,29 @@ class LeadBoardWidget(Vertical):
         table.clear()
 
         priority_colors = {
-            LeadPriority.CRITICAL: "[bold red]CRITICAL[/bold red]",
-            LeadPriority.HIGH: "[red]HIGH[/red]",
-            LeadPriority.MEDIUM: "[yellow]MEDIUM[/yellow]",
-            LeadPriority.LOW: "[dim]LOW[/dim]",
+            LeadPriority.CRITICAL: "[bold white on #801818] CRITICAL [/]",
+            LeadPriority.HIGH: "[bold white on #662d18]   HIGH   [/]",
+            LeadPriority.MEDIUM: "[bold white on #4d4414]  MEDIUM  [/]",
+            LeadPriority.LOW: "[dim white on #262626]   LOW    [/]",
         }
 
         status_colors = {
-            LeadStatus.BACKLOG: "[white]BACKLOG[/white]",
-            LeadStatus.IN_PROGRESS: "[yellow]⟳ IN PROGRESS[/yellow]",
-            LeadStatus.CONFIRMED: "[bold green]✔ CONFIRMED[/bold green]",
-            LeadStatus.REJECTED: "[dim]✖ REJECTED[/dim]",
+            LeadStatus.BACKLOG: "[dim white on #1f1f1f]   BACKLOG   [/]",
+            LeadStatus.IN_PROGRESS: "[bold yellow on #3b3014] ⟳ PROGRESS  [/]",
+            LeadStatus.CONFIRMED: "[bold green on #143520] ✔ CONFIRMED [/]",
+            LeadStatus.REJECTED: "[dim white on #1a1a1a] ✖ REJECTED  [/]",
         }
 
         for l in leads:
-            p_str = priority_colors.get(l.priority, "MEDIUM")
-            s_str = status_colors.get(l.status, "BACKLOG")
+            p_str = priority_colors.get(l.priority, "[dim]MEDIUM[/dim]")
+            s_str = status_colors.get(l.status, "[dim]BACKLOG[/dim]")
             desc_preview = l.description if len(l.description) <= 60 else l.description[:57] + "..."
 
             table.add_row(
                 str(l.id),
                 p_str,
                 s_str,
-                escape(l.target_ip or "Global"),
+                f"[cyan]{escape(l.target_ip or 'Global')}[/cyan]",
                 f"[bold]{escape(l.title)}[/bold]",
                 escape(desc_preview),
                 key=str(l.id),

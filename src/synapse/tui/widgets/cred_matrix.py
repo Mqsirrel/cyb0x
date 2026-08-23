@@ -6,7 +6,7 @@ from typing import List
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Static, DataTable
+from textual.widgets import DataTable, Static
 
 from synapse.models import Credential
 
@@ -28,9 +28,17 @@ class CredentialMatrixWidget(Vertical):
         for c in credentials:
             tested_summary = []
             for tip, tdata in c.tested_targets.items():
-                status_mark = "✔ (Pwn3d)" if tdata.get("admin") else ("✔" if tdata.get("valid") else "✖")
-                tested_summary.append(f"{escape(str(tip))}:{status_mark}")
-            tested_str = ", ".join(tested_summary) if tested_summary else "Untested"
+                if ":" in tip and tdata.get("service") and tip.endswith(f":{tdata.get('service')}"):
+                    continue  # Skip redundant compound key in display
+                if tdata.get("admin"):
+                    status_mark = f"[bold white on #143520] {escape(str(tip))}:✔(Admin) [/]"
+                elif tdata.get("valid"):
+                    status_mark = f"[bold green] {escape(str(tip))}:✔ [/bold green]"
+                else:
+                    status_mark = f"[dim red] {escape(str(tip))}:✖ [/dim red]"
+                tested_summary.append(status_mark)
+
+            tested_str = " ".join(tested_summary) if tested_summary else "[dim]Untested[/dim]"
             secret_disp = c.secret if len(c.secret) <= 30 else c.secret[:27] + "..."
 
             table.add_row(
@@ -38,7 +46,7 @@ class CredentialMatrixWidget(Vertical):
                 escape(c.domain or "-"),
                 f"[bold]{escape(c.username)}[/bold]",
                 f"[yellow]{escape(secret_disp)}[/yellow]",
-                escape(c.cred_type.value),
+                f"[magenta]{escape(c.cred_type.value)}[/magenta]",
                 escape(c.service_scope or "general"),
                 tested_str,
                 key=str(c.id),
