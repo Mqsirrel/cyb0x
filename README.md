@@ -90,8 +90,8 @@ Contains an offline, battle-tested knowledge base covering 45+ network services 
 ### Using `uv` (Recommended):
 ```bash
 # Clone the repository
-git clone https://github.com/albraa/synapse.git
-cd synapse
+git clone https://github.com/Mqsirrel/cyb0x.git
+cd cyb0x
 
 # Run directly
 uv run synapse
