@@ -314,6 +314,7 @@ class DatabaseRepository:
         description: str = "",
         command_template: str = "",
         status: ChecklistStatus = ChecklistStatus.TODO,
+        output_snippet: str = "",
     ) -> ChecklistItem:
         conn = self.get_connection()
         try:
@@ -325,13 +326,19 @@ class DatabaseRepository:
             existing = cur.fetchone()
             if existing:
                 item_id = existing["id"]
+                if output_snippet:
+                    cur.execute(
+                        "UPDATE checklists SET output_snippet = ?, status = ? WHERE id = ?",
+                        (output_snippet, status.value, item_id),
+                    )
+                    conn.commit()
             else:
                 cur.execute(
                     """
-                    INSERT INTO checklists (service_id, category, title, description, command_template, status)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO checklists (service_id, category, title, description, command_template, status, output_snippet)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (service_id, category, title, description, command_template, status.value),
+                    (service_id, category, title, description, command_template, status.value, output_snippet),
                 )
                 item_id = cur.lastrowid
                 conn.commit()

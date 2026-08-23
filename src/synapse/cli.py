@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import ipaddress
 import sys
 from pathlib import Path
 from typing import Optional
 import click
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 
+from synapse.ai.advisor import AIAdvisor
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json, import_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
@@ -35,6 +37,10 @@ def get_default_db_path(workspace: str = "default") -> Path:
     """Returns path to workspace SQLite database."""
     base = Path.home() / ".synapse" / "workspaces"
     base.mkdir(parents=True, exist_ok=True)
+    try:
+        base.chmod(0o700)
+    except Exception:
+        pass
     return base / f"{workspace}.db"
 
 
@@ -52,6 +58,7 @@ def main(ctx: click.Context, workspace: str, db_path: Optional[str]) -> None:
 
     if ctx.invoked_subcommand is None:
         from synapse.tui.app import SynapseTUI
+
         tui = SynapseTUI(db_path=ctx.obj["db_path"])
         tui.run()
 
@@ -61,14 +68,23 @@ def main(ctx: click.Context, workspace: str, db_path: Optional[str]) -> None:
 def tui(ctx: click.Context) -> None:
     """Launch the interactive terminal user interface."""
     from synapse.tui.app import SynapseTUI
+
     app = SynapseTUI(db_path=ctx.obj["db_path"])
     app.run()
 
 
 @main.command()
 @click.argument("scan_file", type=click.Path(exists=True))
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(["auto", "nmap-xml", "nmap-gnmap", "nmap-text", "netexec", "rustscan", "masscan"]),
+    default="auto",
+    help="Scan format (default: 'auto')",
+)
 @click.pass_context
-def ingest(ctx: click.Context, scan_file: str) -> None:
+def ingest(ctx: click.Context, scan_file: str, fmt: str) -> None:
     """Ingest scan files (Nmap XML/gnmap, Rustscan JSON, Masscan, NetExec logs)."""
     repo: DatabaseRepository = ctx.obj["repo"]
     engine = MethodologyEngine()
@@ -78,35 +94,55 @@ def ingest(ctx: click.Context, scan_file: str) -> None:
     parsed_targets = []
     parsed_creds = []
 
-    # 1. XML detection
-    if content.strip().startswith("<?xml") or "<nmaprun" in content:
-        console.print(f"[cyan]Detected Nmap XML scan: {file_path.name}[/cyan]")
-        parsed_targets = parse_nmap_xml(file_path)
+    try:
+        if fmt == "nmap-xml" or (fmt == "auto" and (content.strip().startswith("<?xml") or "<nmaprun" in content)):
+            console.print(f"[cyan]Detected Nmap XML scan: {file_path.name}[/cyan]")
+            parsed_targets = parse_nmap_xml(file_path)
 
-    # 2. Grepable detection
-    elif "Host:" in content and "Ports:" in content:
-        console.print(f"[cyan]Detected Nmap Grepable (-oG) scan: {file_path.name}[/cyan]")
-        parsed_targets = parse_nmap_gnmap(content)
+        elif fmt == "nmap-gnmap" or (fmt == "auto" and "Host:" in content and "Ports:" in content):
+            console.print(f"[cyan]Detected Nmap Grepable (-oG) scan: {file_path.name}[/cyan]")
+            parsed_targets = parse_nmap_gnmap(content)
 
-    # 3. Try NetExec log
-    if not parsed_targets:
-        res = parse_netexec_output(content)
-        if res.get("targets") or res.get("credentials"):
+        elif fmt == "netexec":
             console.print(f"[cyan]Detected NetExec log: {file_path.name}[/cyan]")
+            res = parse_netexec_output(content)
             parsed_targets = res.get("targets", [])
             parsed_creds = res.get("credentials", [])
 
-    # 4. Try Rustscan JSON or masscan
-    if not parsed_targets and (content.strip().startswith("[") or "Open " in content):
-        console.print(f"[cyan]Parsing as Rustscan output: {file_path.name}[/cyan]")
-        parsed_targets = parse_rustscan_json(content)
-        if not parsed_targets:
+        elif fmt == "rustscan":
+            console.print(f"[cyan]Parsing as Rustscan output: {file_path.name}[/cyan]")
+            parsed_targets = parse_rustscan_json(content)
+
+        elif fmt == "masscan":
+            console.print(f"[cyan]Parsing as Masscan output: {file_path.name}[/cyan]")
             parsed_targets = parse_masscan_json(content)
 
-    # 5. Fallback to standard Nmap text
-    if not parsed_targets and ("Nmap scan report" in content or "PORT" in content):
-        console.print(f"[cyan]Parsing as standard Nmap text: {file_path.name}[/cyan]")
-        parsed_targets = parse_nmap_text(content)
+        elif fmt == "nmap-text":
+            console.print(f"[cyan]Parsing as standard Nmap text: {file_path.name}[/cyan]")
+            parsed_targets = parse_nmap_text(content)
+
+        elif fmt == "auto":
+            # 1. Try NetExec log
+            res = parse_netexec_output(content)
+            if res.get("targets") or res.get("credentials"):
+                console.print(f"[cyan]Detected NetExec log: {file_path.name}[/cyan]")
+                parsed_targets = res.get("targets", [])
+                parsed_creds = res.get("credentials", [])
+
+            # 2. Try Rustscan JSON or masscan
+            if not parsed_targets and (content.strip().startswith("[") or "Open " in content):
+                parsed_targets = parse_rustscan_json(content)
+                if not parsed_targets:
+                    parsed_targets = parse_masscan_json(content)
+
+            # 3. Fallback to standard Nmap text
+            if not parsed_targets and ("Nmap scan report" in content or "PORT" in content):
+                console.print(f"[cyan]Parsing as standard Nmap text: {file_path.name}[/cyan]")
+                parsed_targets = parse_nmap_text(content)
+
+    except Exception as e:
+        console.print(f"[red]Error parsing scan file {file_path.name}: {e}[/red]")
+        return
 
     if not parsed_targets and not parsed_creds:
         console.print("[yellow]No targets or credentials could be extracted from file.[/yellow]")
@@ -166,7 +202,9 @@ def ingest(ctx: click.Context, scan_file: str) -> None:
             notes=pc.get("notes", ""),
         )
         if pc.get("is_admin") and t:
-            repo.record_credential_test(cred.id, t.ip, pc.get("service_scope", "smb"), valid=True, admin=True)  # type: ignore
+            repo.record_credential_test(
+                cred.id, t.ip, pc.get("service_scope", "smb"), valid=True, admin=True  # type: ignore
+            )
         added_creds += 1
 
     console.print(
@@ -189,7 +227,10 @@ def show_status(ctx: click.Context) -> None:
     repo: DatabaseRepository = ctx.obj["repo"]
     stats = repo.get_stats()
 
-    table = Table(title=f"Assessment Status [Workspace: {ctx.obj['workspace']}]", border_style="cyan")
+    table = Table(
+        title=f"Assessment Status [Workspace: {ctx.obj['workspace']}]",
+        border_style="cyan",
+    )
     table.add_column("Metric", style="bold white")
     table.add_column("Count", style="bold green")
 
@@ -214,7 +255,9 @@ def list_targets(ctx: click.Context) -> None:
     targets = repo.list_targets()
 
     if not targets:
-        console.print("[dim]No targets in workspace. Ingest a scan or run 'synapse add-target'.[/dim]")
+        console.print(
+            "[dim]No targets in workspace. Ingest a scan or run 'synapse add-target'.[/dim]"
+        )
         return
 
     table = Table(title="Scope & Target Matrix", border_style="cyan")
@@ -225,53 +268,101 @@ def list_targets(ctx: click.Context) -> None:
     table.add_column("Open Ports / Services", style="white")
 
     for t in targets:
-        svc_summary = ", ".join([f"{s.port}/{s.name}" for s in t.services]) if t.services else "[dim]None[/dim]"
-        status_color = "green" if t.status == TargetStatus.PWNED else ("magenta" if t.status == TargetStatus.FOOTHOLD else "white")
-        table.add_row(t.ip, t.hostname or "-", t.os, f"[{status_color}]{t.status.value.upper()}[/{status_color}]", svc_summary)
+        svc_summary = (
+            ", ".join([f"{s.port}/{s.name}" for s in t.services])
+            if t.services
+            else "[dim]None[/dim]"
+        )
+        status_color = (
+            "green"
+            if t.status == TargetStatus.PWNED
+            else ("magenta" if t.status == TargetStatus.FOOTHOLD else "white")
+        )
+        table.add_row(
+            t.ip,
+            t.hostname or "-",
+            t.os,
+            f"[{status_color}]{t.status.value.upper()}[/{status_color}]",
+            svc_summary,
+        )
 
     console.print(table)
 
 
 @main.command(name="add-target")
-@click.argument("ip")
+@click.argument("ip_or_cidr")
 @click.option("--hostname", "-h", default="", help="Hostname or FQDN")
 @click.option("--os", default="Unknown", help="Operating System (Linux/Windows)")
 @click.option("--ports", "-p", default="", help="Comma-separated ports (e.g. 22,80,445)")
 @click.pass_context
-def add_target(ctx: click.Context, ip: str, hostname: str, os: str, ports: str) -> None:
-    """Add a target host and optional ports manually."""
+def add_target(
+    ctx: click.Context, ip_or_cidr: str, hostname: str, os: str, ports: str
+) -> None:
+    """Add target host(s) or CIDR subnet manually."""
     repo: DatabaseRepository = ctx.obj["repo"]
     engine = MethodologyEngine()
 
-    t = repo.add_or_get_target(ip=ip, hostname=hostname, os=os)
+    target_ips = []
+    # Expand CIDR if subnet provided
+    if "/" in ip_or_cidr:
+        try:
+            net = ipaddress.ip_network(ip_or_cidr, strict=False)
+            target_ips = [str(ip) for ip in net.hosts()]
+            if not target_ips:
+                target_ips = [str(net.network_address)]
+        except ValueError:
+            target_ips = [ip_or_cidr]
+    else:
+        target_ips = [ip_or_cidr]
+
+    valid_ports = []
     if ports:
         for p in ports.split(","):
             p = p.strip()
-            if p.isdigit():
-                port_num = int(p)
-                svc = repo.add_or_update_service(target_id=t.id, port=port_num)  # type: ignore
-                for rc in engine.get_checklists_for_service(svc):
-                    cmd = engine.render_command(rc.get("command_template", ""), t, svc)
-                    repo.add_checklist_item(
-                        service_id=svc.id,  # type: ignore
-                        category=rc.get("category", "enum"),
-                        title=rc.get("title", ""),
-                        description=rc.get("description", ""),
-                        command_template=cmd,
-                    )
+            if p.isdigit() and 1 <= int(p) <= 65535:
+                valid_ports.append(int(p))
 
-    console.print(f"[bold green]✔ Added target {ip} to workspace {ctx.obj['workspace']}[/bold green]")
+    for ip in target_ips:
+        t = repo.add_or_get_target(ip=ip, hostname=hostname, os=os)
+        for port_num in valid_ports:
+            svc = repo.add_or_update_service(target_id=t.id, port=port_num)  # type: ignore
+            for rc in engine.get_checklists_for_service(svc):
+                cmd = engine.render_command(rc.get("command_template", ""), t, svc)
+                repo.add_checklist_item(
+                    service_id=svc.id,  # type: ignore
+                    category=rc.get("category", "enum"),
+                    title=rc.get("title", ""),
+                    description=rc.get("description", ""),
+                    command_template=cmd,
+                )
+
+    console.print(
+        f"[bold green]✔ Added {len(target_ips)} target(s) to workspace {ctx.obj['workspace']}[/bold green]"
+    )
 
 
 @main.command(name="add-cred")
 @click.argument("username")
 @click.argument("secret")
-@click.option("--type", "cred_type", default="password", help="password, ntlm_hash, ssh_key, api_token")
+@click.option(
+    "--type",
+    "cred_type",
+    default="password",
+    help="password, ntlm_hash, ssh_key, api_token",
+)
 @click.option("--domain", "-d", default="", help="Active Directory domain")
 @click.option("--scope", "-s", default="", help="Service scope (e.g. smb, ssh, http)")
 @click.option("--target-ip", "-t", default=None, help="Associated target IP")
 @click.pass_context
-def add_cred(ctx: click.Context, username: str, secret: str, cred_type: str, domain: str, scope: str, target_ip: Optional[str]) -> None:
+def add_cred(
+    ctx: click.Context,
+    username: str,
+    secret: str,
+    cred_type: str,
+    domain: str,
+    scope: str,
+    target_ip: Optional[str],
+) -> None:
     """Save a credential or password hash into the vault."""
     repo: DatabaseRepository = ctx.obj["repo"]
     t = repo.get_target_by_ip(target_ip) if target_ip else None
@@ -287,8 +378,11 @@ def add_cred(ctx: click.Context, username: str, secret: str, cred_type: str, dom
 
 
 @main.command(name="list-creds")
+@click.option(
+    "--show-secrets", is_flag=True, default=False, help="Display full secrets instead of masking"
+)
 @click.pass_context
-def list_creds(ctx: click.Context) -> None:
+def list_creds(ctx: click.Context, show_secrets: bool) -> None:
     """List all credentials stored in the vault."""
     repo: DatabaseRepository = ctx.obj["repo"]
     creds = repo.list_credentials()
@@ -311,14 +405,111 @@ def list_creds(ctx: click.Context) -> None:
             mark = "✔ (Pwn3d)" if tdata.get("admin") else ("✔" if tdata.get("valid") else "✖")
             tested_summary.append(f"{tip}:{mark}")
         tested_str = ", ".join(tested_summary) if tested_summary else "[dim]Untested[/dim]"
-        table.add_row(c.domain or "-", c.username, c.secret, c.cred_type.value, c.service_scope or "general", tested_str)
+
+        if show_secrets:
+            secret_disp = c.secret
+        else:
+            secret_disp = (
+                c.secret[:4] + "****" + c.secret[-4:]
+                if len(c.secret) > 8
+                else "********"
+            )
+
+        table.add_row(
+            c.domain or "-",
+            c.username,
+            secret_disp,
+            c.cred_type.value,
+            c.service_scope or "general",
+            tested_str,
+        )
 
     console.print(table)
 
 
+@main.command(name="next")
+@click.argument("ip", required=False, default=None)
+@click.pass_context
+def suggest_next_steps(ctx: click.Context, ip: Optional[str]) -> None:
+    """Triage attack surface and suggest next attack steps."""
+    repo: DatabaseRepository = ctx.obj["repo"]
+    advisor = AIAdvisor()
+
+    if ip:
+        target = repo.get_target_by_ip(ip)
+        if not target:
+            console.print(f"[red]Target {ip} not found in workspace.[/red]")
+            return
+        targets = [target]
+    else:
+        targets = repo.list_targets()
+
+    if not targets:
+        console.print("[dim]No targets in workspace.[/dim]")
+        return
+
+    for t in targets:
+        suggestions = advisor.analyze_target_attack_surface(t)
+        panel_content = f"[bold white]Target:[/bold white] {t.ip} ({t.os})\n"
+        panel_content += f"[bold white]Status:[/bold white] {t.status.value.upper()}\n\n"
+        panel_content += "[bold cyan]Recommended High-Value Actions:[/bold cyan]\n"
+        for s in suggestions:
+            pri = s.get("priority", LeadPriority.MEDIUM)
+            pri_val = pri.value.upper() if hasattr(pri, "value") else str(pri).upper()
+            pri_color = "red" if pri_val == "CRITICAL" else ("yellow" if pri_val == "HIGH" else "green")
+            panel_content += f"  • [{pri_color}][{pri_val}][/{pri_color}] [bold]{s['title']}[/bold]\n"
+            panel_content += f"    Rationale: {s.get('rationale', '-')}\n"
+            if s.get("suggested_command"):
+                panel_content += f"    Recipe: [green]{s['suggested_command']}[/green]\n"
+
+        console.print(
+            Panel(
+                panel_content,
+                title=f"Methodology Copilot: {t.ip}",
+                border_style="cyan",
+            )
+        )
+
+
+@main.command(name="import-backup")
+@click.argument("json_file", type=click.Path(exists=True))
+@click.pass_context
+def import_backup(ctx: click.Context, json_file: str) -> None:
+    """Restore workspace state from a JSON backup file."""
+    repo: DatabaseRepository = ctx.obj["repo"]
+    file_path = Path(json_file)
+    counts = import_workspace_json(repo, file_path)
+    console.print(
+        Panel(
+            f"[bold green]Workspace Restored Successfully![/bold green]\n"
+            f"• Targets: [bold]{counts['targets']}[/bold]\n"
+            f"• Services: [bold]{counts['services']}[/bold]\n"
+            f"• Checklists: [bold]{counts['checklists']}[/bold]\n"
+            f"• Credentials: [bold]{counts['credentials']}[/bold]\n"
+            f"• Leads: [bold]{counts['leads']}[/bold]\n"
+            f"• Evidence: [bold]{counts['evidence']}[/bold]\n"
+            f"• Routes: [bold]{counts['routes']}[/bold]",
+            title="Import Summary",
+            border_style="green",
+        )
+    )
+
+
 @main.command(name="export")
-@click.option("--format", "-f", "fmt", type=click.Choice(["markdown", "obsidian", "json"]), default="markdown", help="Export format")
-@click.option("--output", "-o", default="./assessment_report.md", help="Output file or directory path")
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(["markdown", "obsidian", "json"]),
+    default="markdown",
+    help="Export format",
+)
+@click.option(
+    "--output",
+    "-o",
+    default="./assessment_report.md",
+    help="Output file or directory path",
+)
 @click.pass_context
 def export_report(ctx: click.Context, fmt: str, output: str) -> None:
     """Export engagement report to Markdown, Obsidian Vault, or JSON."""

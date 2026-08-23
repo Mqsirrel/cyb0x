@@ -27,7 +27,7 @@ class RunnerModal(ModalScreen[dict]):
     }
     .field-label {
         margin-top: 1;
-        font-weight: bold;
+        text-style: bold;
     }
     #buttons {
         margin-top: 1;

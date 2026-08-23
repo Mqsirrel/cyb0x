@@ -19,7 +19,7 @@ from synapse.models import (
 
 
 def export_workspace_json(repo: DatabaseRepository) -> str:
-    """Exports entire assessment workspace into a JSON string."""
+    """Exports entire assessment workspace into a structured JSON string."""
     targets = repo.list_targets()
     credentials = repo.list_credentials()
     leads = repo.list_leads()
@@ -38,8 +38,10 @@ def export_workspace_json(repo: DatabaseRepository) -> str:
     return json.dumps(data, indent=2)
 
 
-def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path) -> Dict[str, int]:
-    """Imports workspace data from JSON into the repository."""
+def import_workspace_json(
+    repo: DatabaseRepository, json_str_or_path: str | Path
+) -> Dict[str, int]:
+    """Imports workspace data from JSON into the repository with full fidelity."""
     if isinstance(json_str_or_path, Path) or (
         isinstance(json_str_or_path, str)
         and not json_str_or_path.strip().startswith("{")
@@ -50,9 +52,17 @@ def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path
     else:
         data = json.loads(str(json_str_or_path))
 
-    counts = {"targets": 0, "services": 0, "checklists": 0, "credentials": 0, "leads": 0, "evidence": 0, "routes": 0}
+    counts = {
+        "targets": 0,
+        "services": 0,
+        "checklists": 0,
+        "credentials": 0,
+        "leads": 0,
+        "evidence": 0,
+        "routes": 0,
+    }
 
-    # Import targets and services
+    # 1. Import targets and services
     for t_data in data.get("targets", []):
         t = repo.add_or_get_target(
             ip=t_data["ip"],
@@ -86,12 +96,12 @@ def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path
                     description=c_data.get("description", ""),
                     command_template=c_data.get("command_template", ""),
                     status=ChecklistStatus(c_data.get("status", "todo")),
+                    output_snippet=c_data.get("output_snippet", ""),
                 )
                 counts["checklists"] += 1
 
-    # Import credentials
+    # 2. Import credentials
     for c_data in data.get("credentials", []):
-        # Resolve target_id if target_ip is present
         t_id = None
         if c_data.get("target_ip"):
             t = repo.get_target_by_ip(c_data["target_ip"])
@@ -111,14 +121,14 @@ def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path
             for tip, tinfo in c_data["tested_targets"].items():
                 repo.record_credential_test(
                     cred_id=cred.id,  # type: ignore
-                    target_ip=tip,
+                    target_ip=tinfo.get("target_ip", tip.split(":")[0]),
                     service=tinfo.get("service", "smb"),
                     valid=tinfo.get("valid", False),
                     admin=tinfo.get("admin", False),
                 )
         counts["credentials"] += 1
 
-    # Import leads
+    # 3. Import leads
     for l_data in data.get("leads", []):
         t_id = None
         if l_data.get("target_ip"):
@@ -134,7 +144,7 @@ def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path
         )
         counts["leads"] += 1
 
-    # Import evidence
+    # 4. Import evidence
     for e_data in data.get("evidence", []):
         t_id = None
         if e_data.get("target_ip"):
@@ -153,7 +163,7 @@ def import_workspace_json(repo: DatabaseRepository, json_str_or_path: str | Path
             )
             counts["evidence"] += 1
 
-    # Import pivot routes
+    # 5. Import pivot routes
     for r_data in data.get("pivot_routes", []):
         repo.add_pivot_route(
             name=r_data["name"],
