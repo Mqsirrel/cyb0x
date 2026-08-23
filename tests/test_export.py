@@ -1,4 +1,4 @@
-"""Unit tests for report generation, Obsidian vault exporter, and JSON backup/restore."""
+"""Unit tests for report generation, Notion workspace, Obsidian vault exporter, and JSON backup/restore."""
 
 import json
 from pathlib import Path
@@ -6,6 +6,7 @@ import pytest
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json, import_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
+from synapse.export.notion_exporter import export_notion_workspace
 from synapse.models import ChecklistStatus, CredentialType, LeadPriority, ProofType, TargetStatus
 
 
@@ -69,6 +70,37 @@ def test_markdown_report_export(populated_repo: DatabaseRepository):
     assert "Password123!" in report_md
     assert "aad3b435b51404eeaad3b435b51404ee" in report_md
     assert "172.16.10.0/24" in report_md
+
+
+def test_notion_workspace_export(populated_repo: DatabaseRepository, tmp_path: Path):
+    notion_dir = tmp_path / "notion_ws"
+    export_notion_workspace(populated_repo, notion_dir)
+
+    dashboard = (notion_dir / "SYNAPSE Assessment Workspace.md").read_text(encoding="utf-8")
+    assert "# SYNAPSE Assessment Workspace" in dashboard
+    assert "> 🎯 **Targets:**" in dashboard
+    assert "10.10.11.150" in dashboard
+    assert "[10.10.11.150 (dc01.corp.local)](Targets/10.10.11.150.md)" in dashboard
+
+    target_page = (notion_dir / "Targets" / "10.10.11.150.md").read_text(encoding="utf-8")
+    assert "# Target: 10.10.11.150" in target_page
+    assert "Check Anonymous Share Access" in target_page
+    assert "VULNERABILITY FINDING" in target_page
+
+    assert (notion_dir / "Credentials.md").exists()
+    assert (notion_dir / "Leads & Hypotheses.md").exists()
+    assert (notion_dir / "Evidence & Flags.md").exists()
+    assert (notion_dir / "Pivoting & Networks.md").exists()
+
+
+def test_notion_path_traversal_protection(tmp_path: Path):
+    repo = DatabaseRepository(":memory:")
+    repo.add_or_get_target("../../escape_test_notion")
+    notion_dir = tmp_path / "notion_vault"
+    export_notion_workspace(repo, notion_dir)
+
+    assert not (tmp_path / "escape_test_notion.md").exists()
+    assert (notion_dir / "Targets" / "escape_test_notion.md").exists()
 
 
 def test_obsidian_vault_export(populated_repo: DatabaseRepository, tmp_path: Path):

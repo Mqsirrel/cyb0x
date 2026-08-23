@@ -23,7 +23,7 @@ class ExportModal(ModalScreen[dict]):
     }
     #dialog {
         padding: 1 2;
-        width: 65;
+        width: 68;
         height: auto;
         border: thick $primary;
         background: $surface;
@@ -41,21 +41,22 @@ class ExportModal(ModalScreen[dict]):
     }
     """
 
-    def __init__(self, default_output: str = "./report.md", **kwargs):
+    def __init__(self, default_output: str = "./notion_workspace", **kwargs):
         super().__init__(**kwargs)
         self.default_output = default_output
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("[bold cyan]Export Assessment Report & Vault[/bold cyan]")
+            yield Label("[bold cyan]Export Assessment Report & Workspace[/bold cyan]")
             yield Label("Export Format:", classes="field-label")
             yield Select(
                 [
+                    ("Notion Workspace Bundle (Nested Pages & Callouts)", "notion"),
                     ("Single-File Markdown (OffSec/eJPT format)", "markdown"),
-                    ("Linked Obsidian Vault (Directory structure)", "obsidian"),
+                    ("Obsidian Vault (Wikilink note graph)", "obsidian"),
                     ("Complete JSON State Backup", "json"),
                 ],
-                value="markdown",
+                value="notion",
                 id="export-format",
             )
 

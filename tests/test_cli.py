@@ -65,6 +65,13 @@ def test_cli_ingest_and_export(tmp_path: Path):
     assert res.exit_code == 0
     assert "Ingestion Complete" in res.output
 
+    # Export Notion workspace (default)
+    notion_out = tmp_path / "notion_workspace"
+    res_notion = runner.invoke(main, ["--db", db_file, "export", "-f", "notion", "-o", str(notion_out)])
+    assert res_notion.exit_code == 0
+    assert (notion_out / "SYNAPSE Assessment Workspace.md").exists()
+    assert (notion_out / "Targets" / "10.10.11.200.md").exists()
+
     # Export markdown
     out_md = tmp_path / "report.md"
     res_exp = runner.invoke(main, ["--db", db_file, "export", "-f", "markdown", "-o", str(out_md)])

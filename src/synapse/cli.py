@@ -15,6 +15,7 @@ from synapse.ai.advisor import AIAdvisor
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json, import_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
+from synapse.export.notion_exporter import export_notion_workspace
 from synapse.methodology.engine import MethodologyEngine
 from synapse.models import (
     ChecklistStatus,
@@ -500,23 +501,27 @@ def import_backup(ctx: click.Context, json_file: str) -> None:
     "--format",
     "-f",
     "fmt",
-    type=click.Choice(["markdown", "obsidian", "json"]),
-    default="markdown",
-    help="Export format",
+    type=click.Choice(["notion", "markdown", "obsidian", "json"]),
+    default="notion",
+    help="Export format (notion, markdown, obsidian, json)",
 )
 @click.option(
     "--output",
     "-o",
-    default="./assessment_report.md",
+    default="./notion_workspace",
     help="Output file or directory path",
 )
 @click.pass_context
 def export_report(ctx: click.Context, fmt: str, output: str) -> None:
-    """Export engagement report to Markdown, Obsidian Vault, or JSON."""
+    """Export engagement report to Notion Workspace, Markdown, Obsidian Vault, or JSON."""
     repo: DatabaseRepository = ctx.obj["repo"]
     out_path = Path(output).expanduser().resolve()
 
-    if fmt == "markdown":
+    if fmt == "notion":
+        export_notion_workspace(repo, out_path)
+        console.print(f"[bold green]✔ Notion assessment workspace generated at: {out_path}[/bold green]")
+
+    elif fmt == "markdown":
         report_md = export_markdown_report(repo)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(report_md, encoding="utf-8")

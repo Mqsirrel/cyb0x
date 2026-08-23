@@ -21,6 +21,7 @@ from textual.widgets import (
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
+from synapse.export.notion_exporter import export_notion_workspace
 from synapse.methodology.engine import MethodologyEngine
 from synapse.models import (
     ChecklistItem,
@@ -444,7 +445,11 @@ class SynapseTUI(App):
             fmt = res["format"]
             out_path = Path(res["output_path"]).expanduser().resolve()
 
-            if fmt == "markdown":
+            if fmt == "notion":
+                export_notion_workspace(self.repo, out_path)
+                self.notify(f"Notion workspace exported to {out_path}", title="Export Success")
+
+            elif fmt == "markdown":
                 report_md = export_markdown_report(self.repo)
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(report_md, encoding="utf-8")

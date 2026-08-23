@@ -62,10 +62,11 @@ Contains an offline, battle-tested knowledge base covering 45+ network services 
 - Visualizes multi-hop lab topology (Ligolo-ng, Chisel reverse SOCKS, SSH dynamic forwarding).
 - Displays active local bindings and generates dynamic `proxychains` command prefixes.
 
-### 7. Instant Report & Obsidian Vault Exporter
+### 7. Instant Notion Workspace & Report Exporter
+- **Notion Workspace Bundle (`notion_workspace/`)**: Generates structured, nested Markdown pages with Notion callouts, tables, and relative links ready for Notion's *Import -> Markdown* workflow.
 - **Single Markdown Report (`assessment_report.md`)**: Formatted to OffSec / INE submission guidelines (Executive summary, Credential matrix, Target machine breakdown, Port tables, Findings, and Proof logs).
-- **Obsidian Vault (`obsidian_vault/`)**: Generates linked Markdown notes (`[[10.10.11.10]]`, `[[Credentials]]`, `[[Leads]]`) ready to open directly in Obsidian.
-- **Full JSON Backup**: 100% lossless state export and import.
+- **Obsidian Vault (`obsidian_vault/`)**: Generates linked Markdown notes (`[[10.10.11.10]]`, `[[Credentials]]`, `[[Leads]]`) ready to open in Obsidian.
+- **Full JSON Backup**: 100% lossless state export and restore.
 
 ### 8. 100% Offline-First + Pluggable AI Advisor
 - Functions completely offline without internet or API keys.
@@ -123,7 +124,8 @@ synapse --workspace exam
 | **`c`** | Save discovered credential to vault |
 | **`l`** | Record new attack lead / hypothesis |
 | **`e`** | Capture proof flag / evidence with OffSec validation |
-| **`x`** | Export assessment report (Markdown, Obsidian vault, JSON) |
+| **`x`** | Export assessment workspace (Notion, Markdown report, Obsidian vault, JSON) |
+| **`?` / `F1`** | Open interactive keyboard shortcut help screen |
 | **`q`** | Quit application |
 
 ### 4. CLI Headless Mode (Pipelines & Scripts)
@@ -140,7 +142,10 @@ synapse add-cred administrator "Winter2024!" --type password --domain CORP.LOCAL
 # List credentials matrix
 synapse list-creds
 
-# Export publication-ready report
+# Export Notion workspace bundle (Import -> Markdown in Notion)
+synapse export --format notion --output ./notion_workspace
+
+# Export publication-ready OffSec exam report
 synapse export --format markdown --output ./final_report.md
 ```
 

@@ -76,8 +76,8 @@ Defines the core entities using Pydantic:
 - `extract_proof_flags(text)`: Validates 32-character hex MD5 hashes (OffSec `user.txt`/`proof.txt`) and CTF-style flags (`flag{...}`, `HTB{...}`, `EJPT{...}`).
 
 ### 3.6 Export & Reporting (`src/synapse/export/`)
-- `markdown_exporter.py`: Generates single-file Markdown reports tailored to OffSec/eJPT report structures, with sanitized table cells (`|` escaped) and safe code fences.
-- `export_obsidian_vault`: Generates linked Markdown notes (`[[10.10.11.10]]`, `[[Credentials]]`) formatted for Obsidian.
+- `notion_exporter.py`: Generates Notion-native structured Markdown bundles (`SYNAPSE Assessment Workspace.md`, nested `Targets/<ip>.md`, `Credentials.md`, `Leads & Hypotheses.md`, `Evidence & Flags.md`, `Pivoting & Networks.md`) with relative markdown links, Notion callout blocks, and database tables for Notion's *Import -> Markdown* workflow.
+- `markdown_exporter.py`: Generates single-file Markdown reports tailored to OffSec/eJPT report structures, with sanitized table cells (`|` escaped) and safe code fences, as well as Obsidian note vaults.
 - `json_exporter.py`: Lossless workspace JSON serialization and restoration.
 
 ### 3.7 Terminal User Interface (`src/synapse/tui/`)
