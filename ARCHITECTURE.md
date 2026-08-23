@@ -68,8 +68,9 @@ Defines the core entities using Pydantic:
 - `rustscan_parser.py` & `masscan_parser.py`: High-speed port scan list/JSON parsers.
 
 ### 3.4 Methodology Engine (`src/synapse/methodology/`)
-- `data/services.yaml`: Comprehensive knowledge base covering 50+ network services.
-- `engine.py`: Matches discovered services against port lists and regex patterns (`name_patterns`), rendering ready-to-run recipes by substituting `{IP}`, `{PORT}`, `{HOST}`, `{USER}`, `{PASS}`, `{DOMAIN}`.
+- `data/services.yaml`: Comprehensive knowledge base covering 50+ network services, plus a top-level `initial_recon:` section of host-level phase-0 recipes (applied to targets before any service is discovered; only host-scoped variables like `{IP}` / `{HOST}` are valid).
+- `engine.py`: Matches discovered services against port lists and regex patterns (`name_patterns`), rendering ready-to-run recipes by substituting `{IP}`, `{PORT}`, `{HOST}`, `{USER}`, `{PASS}`, `{DOMAIN}`. Also exposes `get_initial_recon_commands(target)` for service-less targets, and supports rendering without a service context (service-scoped tokens such as `{PORT}` remain unsubstituted).
+- **Initial Recon loop (TUI, key `i`):** recon recipes execute through the standard Runner modal; if the captured stdout parses as Nmap text, discovered services are attached via the normal `add_or_update_service` + checklist pipeline — no separate persistence model exists for phase-0 items (evidence ledger records the run instead).
 
 ### 3.5 Runner & Proof Extraction (`src/synapse/runner/`)
 - `executor.py`: Executes commands asynchronously with configurable timeout and output capping.

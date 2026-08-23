@@ -16,6 +16,7 @@ class MethodologyEngine:
 
     def __init__(self, custom_rules_path: Optional[Path] = None):
         self.rules: Dict[str, Any] = {}
+        self.initial_recon_rules: List[Dict[str, Any]] = []
         self._load_default_rules()
         if custom_rules_path and custom_rules_path.exists():
             self._load_custom_rules(custom_rules_path)
@@ -28,6 +29,8 @@ class MethodologyEngine:
                     data = yaml.safe_load(f)
                     if data and "services" in data:
                         self.rules = data["services"]
+                    if data and "initial_recon" in data:
+                        self.initial_recon_rules = data["initial_recon"]
             except Exception:
                 self.rules = {}
 
@@ -37,6 +40,8 @@ class MethodologyEngine:
                 data = yaml.safe_load(f)
                 if data and "services" in data:
                     self.rules.update(data["services"])
+                if data and isinstance(data.get("initial_recon"), list):
+                    self.initial_recon_rules = data["initial_recon"]
         except Exception:
             pass
 
@@ -79,23 +84,43 @@ class MethodologyEngine:
         rule_defn = self.rules.get(rule_key, self.rules.get("generic_unknown", {}))
         return rule_defn.get("checklists", [])
 
+    def get_initial_recon_commands(self, target: Target) -> List[Dict[str, str]]:
+        """Renders host-level phase-0 reconnaissance recipes for a target with no services yet."""
+        rendered: List[Dict[str, str]] = []
+        for rc in self.initial_recon_rules:
+            if not isinstance(rc, dict):
+                continue
+            rendered.append(
+                {
+                    "category": rc.get("category", "recon"),
+                    "title": rc.get("title", ""),
+                    "description": rc.get("description", ""),
+                    "command_template": self.render_command(rc.get("command_template", ""), target),
+                }
+            )
+        return rendered
+
     def render_command(
         self,
         template: str,
         target: Target,
-        service: Service,
+        service: Optional[Service] = None,
         user: str = "admin",
         password: str = "password",
         ntlm_hash: str = "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
         domain: str = "WORKGROUP",
         wordlist: str = "/usr/share/wordlists/dirb/common.txt",
     ) -> str:
-        """Substitutes variables into a command template safely with URL and protocol awareness."""
+        """Substitutes variables into a command template safely with URL and protocol awareness.
+
+        When ``service`` is None (host-level initial recon recipes), service-scoped
+        tokens such as {PORT} are intentionally left unsubstituted.
+        """
         if not template:
             return ""
 
         # Determine HTTP vs HTTPS protocol
-        is_ssl = (
+        is_ssl = bool(service) and (
             service.port in [443, 8443, 9443]
             or "ssl" in (service.name or "").lower()
             or "https" in (service.name or "").lower()
@@ -105,7 +130,7 @@ class MethodologyEngine:
         # Auto-extract domain if default WORKGROUP was passed
         resolved_domain = domain
         if resolved_domain == "WORKGROUP":
-            if service.banner:
+            if service and service.banner:
                 d_match = re.search(r"\(domain:([^\)]+)\)", service.banner, re.IGNORECASE)
                 if d_match:
                     resolved_domain = d_match.group(1).upper()
@@ -118,17 +143,19 @@ class MethodologyEngine:
 
         replacements = {
             "IP": target.ip,
-            "PORT": str(service.port),
             "HOST": target_host,
             "USER": user,
             "PASS": password,
             "HASH": ntlm_hash,
             "DOMAIN": resolved_domain,
             "WORDLIST": wordlist,
-            "PRODUCT": service.product or service.name,
-            "VERSION": service.version or "",
+            "PRODUCT": (service.product or service.name) if service else "",
+            "VERSION": service.version if service else "",
             "PROTO": proto_scheme,
         }
+
+        if service:
+            replacements["PORT"] = str(service.port)
 
         # Substitute {PROTO} or auto-adjust http:// to https:// when SSL is active
         rendered = template

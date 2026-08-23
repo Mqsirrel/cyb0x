@@ -64,6 +64,7 @@ class HelpModal(ModalScreen[None]):
         action_rows = [
             ("Space", "Cycle status of selected checklist item or lead"),
             ("r", "Open Command Runner modal for selected recipe"),
+            ("i", "Launch Initial Reconnaissance for the selected target (phase 0)"),
             ("a", "Add target host / ports manually"),
             ("c", "Save discovered credential to vault"),
             ("l", "Record new attack lead / hypothesis"),

@@ -10,6 +10,31 @@
 #   {DOMAIN}  - Target Active Directory domain / workgroup
 #   {WORDLIST}- Standard wordlist path
 
+# Host-level reconnaissance recipes (phase 0). Applied to a target BEFORE any
+# service is discovered, e.g. right after adding a bare host from the scope list.
+# Only host-scoped variables ({IP}, {HOST}, {DOMAIN}) are valid here.
+initial_recon:
+  - category: "recon"
+    title: "Verify Host Reachability (ICMP)"
+    description: "Confirm the host is alive and measure baseline latency before investing scan time"
+    command_template: "ping -c 4 {IP}"
+  - category: "recon"
+    title: "Top 1000 TCP Ports + Service Versions"
+    description: "Fast default service scan; stdout is Nmap text and can be auto-ingested back into Synapse"
+    command_template: "nmap -sV --top-ports 1000 -T4 {IP}"
+  - category: "recon"
+    title: "All TCP Ports Rapid Discovery"
+    description: "Full 65535-port sweep at high rate to catch services on non-standard ports"
+    command_template: "nmap -p- --min-rate 5000 -T4 -Pn {IP}"
+  - category: "recon"
+    title: "Reverse DNS Lookup"
+    description: "Resolve PTR record to uncover naming conventions and domain context"
+    command_template: "dig +short -x {IP}"
+  - category: "recon"
+    title: "SNMP Default Community Probe"
+    description: "Test the 'public' community string for unauthenticated system description disclosure"
+    command_template: "snmpwalk -v 2c -c public {IP} 1.3.6.1.2.1.1.1"
+
 services:
   ftp:
     ports: [21, 2121]

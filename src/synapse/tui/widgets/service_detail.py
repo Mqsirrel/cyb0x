@@ -74,6 +74,6 @@ class ServiceDetailWidget(Vertical):
         header = self.query_one("#service-header", Static)
         header.update("[bold cyan]Service & Methodology Checklist[/bold cyan]")
         info = self.query_one("#service-info", Static)
-        info.update(f"[dim]{escape(message)}[/dim]")
+        info.update(f"[dim]{escape(message)}[/dim]\n[yellow]Tip:[/yellow] Press [bold]i[/bold] to launch Initial Reconnaissance on this target and discover its attack surface.")
         table = self.query_one("#checklist-table", DataTable)
         table.clear()

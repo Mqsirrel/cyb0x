@@ -40,6 +40,9 @@ Ingests scan outputs directly into an indexed SQLite workspace:
 - **Rustscan & Masscan**: Ingests fast port scan JSON/list outputs.
 - **Plain Text Nmap (`-oN`)**: Robust regex fallback for pasted scan summaries.
 
+### 1b. Initial Reconnaissance Entry Point (Target → Phase 0)
+No scan output yet? Add a bare target (`a`) and press **`i`** in the TUI to launch host-level recon recipes (ICMP reachability, top-1000 & full TCP port scans, reverse DNS, SNMP probe). When a recipe's captured stdout is Nmap text output, Synapse automatically parses it and attaches the discovered services with their full methodology checklists — closing the loop back into the service recipe engine.
+
 ### 2. Built-in Methodology Copilot (45+ Services)
 Contains an offline, battle-tested knowledge base covering 45+ network services (FTP, SSH, Telnet, SMTP, DNS, TFTP, HTTP, Kerberos, NFS, MSRPC, SMB, SNMP, LDAP, MSSQL, Oracle, MySQL, RDP, WinRM, Redis, MongoDB, AJP Ghostcat, Docker, etc.):
 - Automatically attaches prioritized checks (`Recon` → `Enumeration` → `Vulnerability Check` → `Exploitation` → `Privilege Escalation`).
@@ -120,6 +123,7 @@ synapse --workspace exam
 | **`1` - `5`** | Switch tabs (Workbench, Cred Vault, Leads, Evidence, Pivoting) |
 | **`Space`** | Cycle status of selected checklist item or lead (`[TODO]` $\to$ `[CHECKED]` $\to$ `[FINDING]`) |
 | **`r`** | Launch Command Runner modal for selected recipe (Edit, execute, capture evidence) |
+| **`i`** | Launch Initial Reconnaissance for the selected target (phase 0: ping, top-port & full-port scans; Nmap stdout is auto-ingested back into service recipes) |
 | **`a`** | Add target host / ports manually |
 | **`c`** | Save discovered credential to vault |
 | **`l`** | Record new attack lead / hypothesis |
@@ -166,6 +170,8 @@ services:
         description: "Probe for exposed documentation and schema dumps"
         command_template: "curl -s -i http://{IP}:{PORT}/docs"
 ```
+
+You can also override the phase-0 recipes by adding a top-level `initial_recon:` list (host-scoped variables `{IP}` / `{HOST}` only) to the same file.
 
 ---
 

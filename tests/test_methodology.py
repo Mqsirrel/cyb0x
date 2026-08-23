@@ -1,5 +1,7 @@
 """Unit tests for methodology knowledge base and rule engine."""
 
+from pathlib import Path
+
 import pytest
 from synapse.methodology.engine import MethodologyEngine
 from synapse.models import Service, Target
@@ -46,3 +48,62 @@ def test_methodology_command_rendering():
     assert "http://10.10.11.120:80/FUZZ" in rendered
     assert "/usr/share/wordlists/dirb/common.txt" in rendered
     assert "Host: web01.corp.local" in rendered
+
+
+def test_initial_recon_rules_loaded_and_rendered():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50", hostname="")
+
+    recipes = engine.get_initial_recon_commands(target)
+    assert len(recipes) >= 3
+    for rc in recipes:
+        assert rc["title"]
+        assert rc["command_template"]
+        # Host-level recipes must be fully rendered with no service context
+        assert "{IP}" not in rc["command_template"]
+        assert "10.10.11.50" in rc["command_template"]
+
+    # Hostname substitution ({HOST}) when available
+    named_target = Target(ip="10.10.11.50", hostname="dc01.corp.local")
+    ping_cmd = engine.render_command("ping -c 4 {HOST}", named_target)
+    assert "ping -c 4 dc01.corp.local" == ping_cmd
+
+
+def test_render_command_without_service_leaves_port_token():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50")
+    rendered = engine.render_command("nmap -p {PORT} {IP}", target)
+    assert "nmap -p {PORT} 10.10.11.50" == rendered
+
+
+def test_initial_recon_custom_override(tmp_path: Path):
+    custom = tmp_path / "custom_methodology.yaml"
+    custom.write_text(
+        """
+services:
+  my_service:
+    ports: [9090]
+    name_patterns: ["custom-api"]
+    checklists:
+      - category: "enum"
+        title: "Check Swagger"
+        command_template: "curl -s http://{IP}:{PORT}/docs"
+initial_recon:
+  - category: "recon"
+    title: "Custom Sweep"
+    description: "User-defined phase-0 recipe"
+    command_template: "rustscan -a {IP}"
+""",
+        encoding="utf-8",
+    )
+    engine = MethodologyEngine(custom_rules_path=custom)
+    target = Target(ip="192.168.1.10")
+
+    recipes = engine.get_initial_recon_commands(target)
+    assert len(recipes) == 1
+    assert recipes[0]["title"] == "Custom Sweep"
+    assert recipes[0]["command_template"] == "rustscan -a 192.168.1.10"
+
+    # Custom service rules still merge alongside the recon override
+    svc = Service(target_id=1, port=9090, name="custom-api")
+    assert engine.match_service(svc) == "my_service"

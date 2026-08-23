@@ -38,12 +38,14 @@ from synapse.models import (
     Target,
     TargetStatus,
 )
+from synapse.parsers.nmap_parser import parse_nmap_text
 from synapse.tui.modals.add_cred_modal import AddCredModal
 from synapse.tui.modals.add_evidence_modal import AddEvidenceModal
 from synapse.tui.modals.add_lead_modal import AddLeadModal
 from synapse.tui.modals.add_target_modal import AddTargetModal
 from synapse.tui.modals.export_modal import ExportModal
 from synapse.tui.modals.help_modal import HelpModal
+from synapse.tui.modals.initial_recon_modal import InitialReconModal
 from synapse.tui.modals.runner_modal import RunnerModal
 from synapse.tui.widgets.cred_matrix import CredentialMatrixWidget
 from synapse.tui.widgets.evidence_view import EvidenceViewWidget
@@ -106,6 +108,7 @@ class SynapseTUI(App):
 
     BINDINGS = [
         Binding("a", "add_target", "Add Target", priority=False),
+        Binding("i", "initial_recon", "Initial Recon", priority=False),
         Binding("c", "add_cred", "Add Cred", priority=False),
         Binding("l", "add_lead", "Add Lead", priority=False),
         Binding("e", "add_evidence", "Add Flag/Evidence", priority=False),
@@ -287,6 +290,108 @@ class SynapseTUI(App):
             self.notify(f"Target {t.ip} added successfully", title="Target Added")
 
         self.push_screen(AddTargetModal(), on_result)
+
+    def _ingest_recon_output(self, target: Target, output: str) -> int:
+        """Parses Nmap text output captured by the recon runner and attaches discovered
+        services to the target through the standard methodology pipeline.
+
+        Returns the number of services processed (0 when the output is not parseable).
+        """
+        if not output:
+            return 0
+
+        try:
+            parsed_targets = parse_nmap_text(output)
+        except Exception:
+            return 0
+
+        ingested = 0
+        for pt in parsed_targets:
+            if pt.get("ip") != target.ip:
+                continue
+            for svc_data in pt.get("services", []):
+                try:
+                    svc = self.repo.add_or_update_service(
+                        target_id=target.id,  # type: ignore
+                        port=svc_data["port"],
+                        protocol=svc_data.get("protocol", "tcp"),
+                        name=svc_data.get("name", "unknown"),
+                        product=svc_data.get("product", ""),
+                        version=svc_data.get("version", ""),
+                        banner=svc_data.get("banner", ""),
+                    )
+                except Exception:
+                    continue
+                for rc in self.methodology.get_checklists_for_service(svc):
+                    cmd = self.methodology.render_command(rc.get("command_template", ""), target, svc)
+                    self.repo.add_checklist_item(
+                        service_id=svc.id,  # type: ignore
+                        category=rc.get("category", "enum"),
+                        title=rc.get("title", ""),
+                        description=rc.get("description", ""),
+                        command_template=cmd,
+                    )
+                ingested += 1
+        return ingested
+
+    def action_initial_recon(self) -> None:
+        """Launches host-level phase-0 reconnaissance recipes for the selected target."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        if not self.selected_target:
+            self.notify("Select or add a target first ('a') to launch initial recon.", severity="warning")
+            return
+
+        recon_target = self.repo.get_target_by_id(self.selected_target.id)  # type: ignore
+        if not recon_target:
+            return
+        recipes = self.methodology.get_initial_recon_commands(recon_target)
+        if not recipes:
+            self.notify("No initial recon recipes defined in the methodology knowledge base.", severity="warning")
+            return
+
+        def on_recipe_chosen(chosen: Optional[dict]) -> None:
+            if not chosen:
+                return
+
+            def on_result(res: Optional[dict]) -> None:
+                if not res:
+                    return
+                if res.get("action") != "save_evidence":
+                    return
+
+                fresh = self.repo.get_target_by_ip(recon_target.ip)
+                if not fresh:
+                    return
+
+                self.repo.add_evidence(
+                    target_id=fresh.id,  # type: ignore
+                    proof_type=ProofType.COMMAND_OUTPUT,
+                    title=f"Initial Recon: {chosen['title']}",
+                    command=res.get("command", ""),
+                    output=res.get("output", ""),
+                )
+
+                ingested = self._ingest_recon_output(fresh, res.get("output", ""))
+                if fresh.status == TargetStatus.DISCOVERED:
+                    self.repo.update_target_status(fresh.id, TargetStatus.SCANNING)
+
+                self.refresh_all_views()
+                self.query_one("#tabs", TabbedContent).active = "tab-workbench"
+
+                if ingested:
+                    self.notify(
+                        f"Recon complete — {ingested} service(s) discovered and attached with methodology checklists.",
+                        title="Initial Recon",
+                    )
+                else:
+                    self.notify("Recon evidence saved. No parseable service data in output.", title="Initial Recon")
+
+            self.push_screen(RunnerModal(command=chosen["command"], title=f"Recon: {chosen['title']}"), on_result)
+
+        self.push_screen(InitialReconModal(target_ip=recon_target.ip, recipes=recipes), on_recipe_chosen)
+
 
     def action_add_cred(self) -> None:
         if isinstance(self.screen, ModalScreen):
