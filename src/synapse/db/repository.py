@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from synapse.db.migrations import run_migrations
-from synapse.db.schema import SCHEMA_SQL
+from synapse.db.schema import INDEXES_SQL, SCHEMA_SQL
 from synapse.models import (
     ChecklistItem,
     ChecklistStatus,
@@ -75,6 +75,7 @@ class DatabaseRepository:
         conn = self.get_connection()
         conn.executescript(SCHEMA_SQL)
         run_migrations(conn)
+        conn.executescript(INDEXES_SQL)
         conn.commit()
         if self._mem_conn is None:
             conn.close()
@@ -88,10 +89,15 @@ class DatabaseRepository:
         hostname: str = "",
         os: str = "Unknown",
         status: TargetStatus = TargetStatus.DISCOVERED,
-        in_scope: bool = True,
+        in_scope: Optional[bool] = None,
         tags: Optional[List[str]] = None,
         notes: str = "",
     ) -> Target:
+        """Inserts or merges a target.
+
+        ``in_scope=None`` (the default) preserves the persisted scope flag on
+        merge instead of silently re-scoping the host.
+        """
         tags_json = json.dumps(tags or [])
         conn = self.get_connection()
         try:
@@ -104,7 +110,7 @@ class DatabaseRepository:
                 new_tags = tags_json if tags is not None else row["tags"]
                 new_notes = notes if notes else row["notes"]
                 new_status = status.value if status != TargetStatus.DISCOVERED else row["status"]
-                new_in_scope = 1 if in_scope else 0
+                new_in_scope = row["in_scope"] if in_scope is None else (1 if in_scope else 0)
                 cur.execute(
                     """
                     UPDATE targets
@@ -121,7 +127,7 @@ class DatabaseRepository:
                     INSERT INTO targets (ip, hostname, os, status, in_scope, tags, notes)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (ip, hostname, os, status.value, 1 if in_scope else 0, tags_json, notes),
+                    (ip, hostname, os, status.value, 1 if (in_scope is None or in_scope) else 0, tags_json, notes),
                 )
                 target_id = cur.lastrowid
                 conn.commit()
@@ -201,6 +207,21 @@ class DatabaseRepository:
             cur.execute(
                 "UPDATE targets SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (status.value, target_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            if self._mem_conn is None:
+                conn.close()
+
+    def set_target_scope(self, target_id: int, in_scope: bool) -> bool:
+        """Toggles the engagement scope flag for a host."""
+        conn = self.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE targets SET in_scope = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (1 if in_scope else 0, target_id),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -698,6 +719,25 @@ class DatabaseRepository:
             if self._mem_conn is None:
                 conn.close()
 
+    def update_credential_tested_targets(self, cred_id: int, tested_targets: Dict[str, Any]) -> bool:
+        """Replaces the full tested-targets map (used to reset lifecycle state)."""
+        conn = self.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE credentials
+                SET tested_targets = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (json.dumps(tested_targets), cred_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            if self._mem_conn is None:
+                conn.close()
+
     def delete_credential(self, cred_id: int) -> bool:
         conn = self.get_connection()
         try:
@@ -718,6 +758,7 @@ class DatabaseRepository:
         title: str,
         proof_type: ProofType = ProofType.COMMAND_OUTPUT,
         service_id: Optional[int] = None,
+        checklist_id: Optional[int] = None,
         command: str = "",
         output: str = "",
         flag_hash: str = "",
@@ -728,12 +769,13 @@ class DatabaseRepository:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO evidence (target_id, service_id, proof_type, title, command, output, flag_hash, screenshot_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO evidence (target_id, service_id, checklist_id, proof_type, title, command, output, flag_hash, screenshot_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     target_id,
                     service_id,
+                    checklist_id,
                     proof_type.value,
                     title,
                     command,
@@ -1047,6 +1089,7 @@ class DatabaseRepository:
             target_id=row["target_id"],
             target_ip=row["target_ip"] if "target_ip" in row.keys() else None,
             service_id=row["service_id"],
+            checklist_id=row["checklist_id"] if "checklist_id" in row.keys() else None,
             proof_type=ProofType(row["proof_type"]),
             title=row["title"],
             command=row["command"] or "",

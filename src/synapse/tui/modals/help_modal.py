@@ -60,10 +60,22 @@ class HelpModal(ModalScreen[None]):
             help_text.append(f"{key:<14}", style="bold cyan")
             help_text.append(f"{desc}\n")
 
+        help_text.append("\nAssessment Workflow:\n", style="bold yellow")
+        workflow_rows = [
+            ("n", "Open state-aware Triage: known vs unknown, and the highest-value next move"),
+            ("s", "I'm Stuck: rabbit-hole analysis (dead ends vs untested surface vs un-sprayed creds)"),
+            ("o", "Toggle in/out of scope for the selected target"),
+            ("t", "On Creds tab: cycle credential test state for the selected target (untested→valid→invalid)"),
+        ]
+        for key, desc in workflow_rows:
+            help_text.append("  ")
+            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{desc}\n")
+
         help_text.append("\nEngagement Actions:\n", style="bold yellow")
         action_rows = [
             ("Space", "Cycle status of selected checklist item or lead"),
-            ("r", "Open Command Runner modal for selected recipe"),
+            ("r", "Run selected recipe — auto-routes to Initial Recon when no service is selected"),
             ("i", "Launch Initial Reconnaissance for the selected target (phase 0)"),
             ("a", "Add target host / ports manually"),
             ("c", "Save discovered credential to vault"),

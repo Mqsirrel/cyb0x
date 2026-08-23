@@ -6,7 +6,7 @@ import sqlite3
 from typing import Set
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -74,6 +74,10 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         evidence_cols = get_existing_columns(conn, "evidence")
         if "updated_at" not in evidence_cols:
             cur.execute("ALTER TABLE evidence ADD COLUMN updated_at TIMESTAMP;")
+        if "checklist_id" not in evidence_cols:
+            # v3: links captured command output back to the methodology check that produced it
+            cur.execute("ALTER TABLE evidence ADD COLUMN checklist_id INTEGER REFERENCES checklists(id) ON DELETE SET NULL;")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_evidence_checklist ON evidence(checklist_id);")
 
     # 5. Set version in metadata
     cur.execute(

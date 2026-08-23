@@ -74,6 +74,7 @@ def import_workspace_json(
             hostname=t_data.get("hostname", ""),
             os=t_data.get("os", "Unknown"),
             status=TargetStatus(t_data.get("status", "discovered")),
+            in_scope=t_data.get("in_scope", True),
             tags=t_data.get("tags", []),
             notes=t_data.get("notes", ""),
         )
@@ -181,10 +182,54 @@ def import_workspace_json(
             if t:
                 t_id = t.id
         if t_id is not None:
+            # Restore relational links (service / methodology check) so the
+            # evidence ledger keeps its context across workspace round-trips.
+            svc_id = None
+            chk_id = None
+            t_fresh = repo.get_target_by_id(t_id)
+            exported_target = next(
+                (x for x in data.get("targets", []) if x.get("ip") == e_data.get("target_ip")),
+                None,
+            )
+            if t_fresh and exported_target:
+                exported_svc = next(
+                    (s for s in (exported_target.get("services") or []) if s.get("id") == e_data.get("service_id")),
+                    None,
+                )
+                if exported_svc:
+                    match = next(
+                        (
+                            s
+                            for s in t_fresh.services
+                            if s.port == exported_svc.get("port")
+                            and s.protocol == exported_svc.get("protocol", "tcp")
+                        ),
+                        None,
+                    )
+                    if match:
+                        svc_id = match.id
+                        exported_chk = next(
+                            (
+                                c
+                                for c in (exported_svc.get("checklists") or [])
+                                if c.get("id") == e_data.get("checklist_id")
+                            ),
+                            None,
+                        )
+                        if exported_chk and exported_chk.get("title"):
+                            chk_match = next(
+                                (c for c in match.checklists if c.title == exported_chk["title"]),
+                                None,
+                            )
+                            if chk_match:
+                                chk_id = chk_match.id
+
             repo.add_evidence(
                 target_id=t_id,
                 title=title_val,
                 proof_type=ProofType(e_data.get("proof_type", "command_output")),
+                service_id=svc_id,
+                checklist_id=chk_id,
                 command=e_data.get("command", ""),
                 output=e_data.get("output", ""),
                 flag_hash=e_data.get("flag_hash", ""),

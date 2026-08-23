@@ -152,3 +152,56 @@ def test_json_import_resilience(tmp_path: Path):
     assert counts["targets"] == 2
     assert counts["services"] == 1
     assert len(repo.list_targets()) == 2
+
+
+def test_json_roundtrip_preserves_relationships(tmp_path: Path):
+    """Scope flags and evidence->service/checklist links must survive export/import."""
+    source = DatabaseRepository(":memory:")
+    t = source.add_or_get_target("10.10.11.160")
+    oos = source.add_or_get_target("10.10.11.161", hostname="legacy.corp.local")
+    source.set_target_scope(oos.id, False)
+
+    svc = source.add_or_update_service(t.id, 5985, "tcp", "http", "Microsoft HTTPAPI")
+    chk = source.add_checklist_item(svc.id, title="winrm creds spray", command_template="netexec winrm {IP}")
+    ev = source.add_evidence(
+        target_id=t.id,
+        service_id=svc.id,
+        checklist_id=chk.id,
+        title="Output for: winrm creds spray",
+        command="netexec winrm 10.10.11.160",
+        output="Pwn3d!",
+    )
+
+    payload = export_workspace_json(source)
+    restored = DatabaseRepository(tmp_path / "restored.db")
+    import_workspace_json(restored, payload)
+
+    r_t = restored.get_target_by_ip("10.10.11.160")
+    assert len(r_t.services) == 1
+    r_svc = r_t.services[0]
+    assert (r_svc.port, r_svc.name) == (5985, "http")
+
+    # Scope preserved
+    assert restored.get_target_by_ip("10.10.11.161").in_scope is False
+
+    # Evidence -> service -> checklist chain re-linked by identity, not stale IDs
+    r_ev = restored.list_evidence()[0]
+    assert r_ev.service_id == r_svc.id
+    assert r_ev.checklist_id is not None
+    linked_titles = [c.title for c in r_svc.checklists if c.id == r_ev.checklist_id]
+    assert linked_titles == ["winrm creds spray"]
+
+
+def test_json_roundtrip_unlinked_evidence_still_restores(tmp_path: Path):
+    """Evidence with no service/checklist context imports cleanly (backward compat)."""
+    source = DatabaseRepository(":memory:")
+    t = source.add_or_get_target("10.10.11.170")
+    source.add_evidence(target_id=t.id, title="orphan note", command="ls")
+
+    payload = export_workspace_json(source)
+    restored_repo = DatabaseRepository(tmp_path / "restored.db")
+    import_workspace_json(restored_repo, payload)
+
+    restored_evidence = restored_repo.list_evidence()
+    assert len(restored_evidence) == 1
+    assert restored_evidence[0].checklist_id is None

@@ -93,10 +93,12 @@ CREATE TABLE IF NOT EXISTS evidence (
     output TEXT DEFAULT '',
     flag_hash TEXT DEFAULT '',
     screenshot_path TEXT DEFAULT '',
+    checklist_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE,
-    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
+    FOREIGN KEY(checklist_id) REFERENCES checklists(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS pivot_routes (
@@ -110,9 +112,14 @@ CREATE TABLE IF NOT EXISTS pivot_routes (
     status TEXT DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+"""
 
+# Indexes are applied after schema migrations so that columns added by
+# migrations (e.g. evidence.checklist_id) always exist before indexing.
+INDEXES_SQL = """
 CREATE INDEX IF NOT EXISTS idx_services_target ON services(target_id);
 CREATE INDEX IF NOT EXISTS idx_checklists_service ON checklists(service_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_target ON evidence(target_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_checklist ON evidence(checklist_id);
 CREATE INDEX IF NOT EXISTS idx_credentials_username ON credentials(username);
 """

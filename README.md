@@ -121,8 +121,12 @@ synapse --workspace exam
 | Key | Action |
 | :--- | :--- |
 | **`1` - `5`** | Switch tabs (Workbench, Cred Vault, Leads, Evidence, Pivoting) |
+| **`n`** | State-aware **Triage**: what is known / unknown / tested per host + the highest-value next investigations with rationale |
+| **`s`** | **"I'm Stuck"** rabbit-hole triage: separates proven dead ends from untested surface and un-sprayed credentials, and suggests state-derived escape routes (never generic command dumps) |
+| **`o`** | Toggle the selected target in/out of engagement scope (out-of-scope hosts are dimmed and excluded from all suggestions) |
+| **`t`** | On the Creds tab: cycle credential lifecycle against the selected target (`untested → valid → invalid`) |
 | **`Space`** | Cycle status of selected checklist item or lead (`[TODO]` $\to$ `[CHECKED]` $\to$ `[FINDING]`) |
-| **`r`** | Launch Command Runner modal for selected recipe (Edit, execute, capture evidence) |
+| **`r`** | Launch Command Runner modal for selected recipe (Edit, execute, capture evidence). Auto-routes to Initial Recon when no service is selected yet — fresh targets never dead-end here |
 | **`i`** | Launch Initial Reconnaissance for the selected target (phase 0: ping, top-port & full-port scans; Nmap stdout is auto-ingested back into service recipes) |
 | **`a`** | Add target host / ports manually |
 | **`c`** | Save discovered credential to vault |
@@ -131,6 +135,10 @@ synapse --workspace exam
 | **`x`** | Export assessment workspace (Notion, Markdown report, Obsidian vault, JSON) |
 | **`?` / `F1`** | Open interactive keyboard shortcut help screen |
 | **`q`** | Quit application |
+
+The stats banner always shows a live `NEXT:` hint derived from the same
+assessment engine that powers `n`, so the highest-value move is visible at a
+glance without opening any modal.
 
 ### 4. CLI Headless Mode (Pipelines & Scripts)
 ```bash

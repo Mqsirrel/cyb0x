@@ -54,7 +54,7 @@ Defines the core entities using Pydantic:
 - `ChecklistItem`: Actionable methodology tasks (`category`, `title`, `command_template`, `status`, `severity`, `remediation`, `output_snippet`).
 - `Credential`: Passwords, NTLM hashes, Kerberos tickets, and testing matrix (`tested_targets`).
 - `Lead`: Prioritized attack hypotheses (`priority`, `severity`, `status`, `description`).
-- `Evidence`: Proof logs, command outputs, MD5 flag hashes, and screenshot paths.
+- `Evidence`: Proof logs, command outputs, MD5 flag hashes, and screenshot paths, each linked to its target, service, and the methodology check that produced it (`checklist_id`).
 - `PivotRoute`: SOCKS tunnels, Ligolo-ng routes, and local port binds.
 
 ### 3.2 Storage Layer (`src/synapse/db/`)
@@ -71,20 +71,27 @@ Defines the core entities using Pydantic:
 - `data/services.yaml`: Comprehensive knowledge base covering 50+ network services, plus a top-level `initial_recon:` section of host-level phase-0 recipes (applied to targets before any service is discovered; only host-scoped variables like `{IP}` / `{HOST}` are valid).
 - `engine.py`: Matches discovered services against port lists and regex patterns (`name_patterns`), rendering ready-to-run recipes by substituting `{IP}`, `{PORT}`, `{HOST}`, `{USER}`, `{PASS}`, `{DOMAIN}`. Also exposes `get_initial_recon_commands(target)` for service-less targets, and supports rendering without a service context (service-scoped tokens such as `{PORT}` remain unsubstituted).
 - **Initial Recon loop (TUI, key `i`):** recon recipes execute through the standard Runner modal; if the captured stdout parses as Nmap text, discovered services are attached via the normal `add_or_update_service` + checklist pipeline — no separate persistence model exists for phase-0 items (evidence ledger records the run instead).
+- **Seamless fallback (TUI, key `r`):** running a recipe with no service selected auto-routes to the Initial Recon flow, so fresh targets flow Target → recon → discovered services → methodology without dead ends.
 
-### 3.5 Runner & Proof Extraction (`src/synapse/runner/`)
+### 3.5 Assessment Engine (`src/synapse/assessment/`)
+Pure deterministic analysis over repository models — no SQL, no network, no LLM.
+- `build_snapshots(targets)`: per-host `TargetSnapshot` aggregating known vs unknown vs tested state (services by status, checks by status, coverage ratio, valid creds, flags).
+- `get_next_actions(...)`: prioritized investigations with rationale. Ordering: phase-0 gaps → confirmed-admin exploitation → untested enumeration surface → credential sprays → interrupted work → stale-lead housekeeping. Deterministically deduplicated and sorted; out-of-scope and ignored targets are excluded.
+- `detect_rabbit_holes(...)`: `StuckReport` separating proven dead ends from untouched surface and un-sprayed credentials; `is_stuck` is the rabbit-hole signature (dead ends exist AND no open avenue remains in scope). Powers the TUI "I'm stuck" modal (key `s`); triage board on key `n`; live `NEXT:` hint in the stats banner consumes `get_top_action`.
+
+### 3.6 Runner & Proof Extraction (`src/synapse/runner/`)
 - `executor.py`: Executes commands asynchronously with configurable timeout and output capping.
 - `extract_proof_flags(text)`: Validates 32-character hex MD5 hashes (OffSec `user.txt`/`proof.txt`) and CTF-style flags (`flag{...}`, `HTB{...}`, `EJPT{...}`).
 
-### 3.6 Export & Reporting (`src/synapse/export/`)
+### 3.7 Export & Reporting (`src/synapse/export/`)
 - `notion_exporter.py`: Generates Notion-native structured Markdown bundles (`SYNAPSE Assessment Workspace.md`, nested `Targets/<ip>.md`, `Credentials.md`, `Leads & Hypotheses.md`, `Evidence & Flags.md`, `Pivoting & Networks.md`) with relative markdown links, Notion callout blocks, and database tables for Notion's *Import -> Markdown* workflow.
 - `markdown_exporter.py`: Generates single-file Markdown reports tailored to OffSec/eJPT report structures, with sanitized table cells (`|` escaped) and safe code fences, as well as Obsidian note vaults.
-- `json_exporter.py`: Lossless workspace JSON serialization and restoration.
+- `json_exporter.py`: Lossless workspace JSON serialization and restoration (scope flags and evidence→service/checklist relationships are re-linked by identity, not stale IDs).
 
-### 3.7 Terminal User Interface (`src/synapse/tui/`)
-- `app.py`: Main Textual application with responsive layout, tabs (`1`–`5`), and stats banner.
-- `widgets/`: Componentized views for `TargetTreeWidget`, `ServiceDetailWidget`, `CredentialMatrixWidget`, `LeadBoardWidget`, `EvidenceViewWidget`, and `PivotViewWidget`.
-- `modals/`: Isolated modal dialog screens with input focus safety.
+### 3.8 Terminal User Interface (`src/synapse/tui/`)
+- `app.py`: Main Textual application with responsive layout, tabs (`1`–`5`), stats banner (with live `NEXT:` hint), state-aware triage (`n`), stuck/rabbit-hole modal (`s`), scope toggling (`o`), and credential lifecycle marking (`t` on the Creds tab). Service status is derived automatically from checklist state (`_refresh_service_state`).
+- `widgets/`: Componentized views for `TargetTreeWidget` (scope-dimmed), `ServiceDetailWidget` (coverage + linked-evidence counts), `CredentialMatrixWidget` (per-host lifecycle + spray-gap column), `LeadBoardWidget`, `EvidenceViewWidget` (target/service/check relational columns), and `PivotViewWidget`.
+- `modals/`: Isolated modal dialog screens with input focus safety, including `TriageModal` and `StuckModal`.
 
 ---
 

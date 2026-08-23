@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Optional
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -18,6 +19,12 @@ from textual.widgets import (
     Tree,
 )
 
+from synapse.assessment import (
+    build_snapshots,
+    detect_rabbit_holes,
+    get_next_actions,
+    get_top_action,
+)
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
@@ -47,6 +54,8 @@ from synapse.tui.modals.export_modal import ExportModal
 from synapse.tui.modals.help_modal import HelpModal
 from synapse.tui.modals.initial_recon_modal import InitialReconModal
 from synapse.tui.modals.runner_modal import RunnerModal
+from synapse.tui.modals.stuck_modal import StuckModal
+from synapse.tui.modals.triage_modal import TriageModal
 from synapse.tui.widgets.cred_matrix import CredentialMatrixWidget
 from synapse.tui.widgets.evidence_view import EvidenceViewWidget
 from synapse.tui.widgets.lead_board import LeadBoardWidget
@@ -109,10 +118,14 @@ class SynapseTUI(App):
     BINDINGS = [
         Binding("a", "add_target", "Add Target", priority=False),
         Binding("i", "initial_recon", "Initial Recon", priority=False),
+        Binding("r", "run_recipe", "Run Recipe", priority=False),
+        Binding("n", "triage", "Triage (Next?)", priority=False),
+        Binding("s", "stuck_check", "I'm Stuck", priority=False),
+        Binding("o", "toggle_scope", "Scope Toggle", priority=False),
         Binding("c", "add_cred", "Add Cred", priority=False),
+        Binding("t", "mark_cred_tested", "Mark Cred Tested", priority=False),
         Binding("l", "add_lead", "Add Lead", priority=False),
         Binding("e", "add_evidence", "Add Flag/Evidence", priority=False),
-        Binding("r", "run_recipe", "Run Recipe", priority=False),
         Binding("space", "toggle_status", "Toggle Status", priority=False),
         Binding("x", "export_report", "Export Report", priority=False),
         Binding("question_mark", "show_help", "Help (?)", priority=False),
@@ -183,6 +196,13 @@ class SynapseTUI(App):
         if tree.root.children:
             tree.root.children[0].expand()
 
+    def _assessment_inputs(self):
+        """Batched repo data shared by the banner, triage, and stuck workflows."""
+        targets = self.repo.list_targets()
+        credentials = self.repo.list_credentials()
+        leads = self.repo.list_leads()
+        return targets, credentials, leads
+
     def update_stats_banner(self) -> None:
         stats = self.repo.get_stats()
         banner = self.query_one("#stats-banner", Static)
@@ -192,29 +212,45 @@ class SynapseTUI(App):
         finding_str = f"[bold red]{stats['total_findings']}[/bold red]"
         checks_str = f"[cyan]{stats['completed_checks']}/{stats['total_checks']}[/cyan]"
 
+        targets, credentials, leads = self._assessment_inputs()
+        oos = sum(1 for t in targets if not t.in_scope)
+        scope_str = f" ({len(targets) - oos} in-scope)" if oos else ""
+
+        top = get_top_action(targets, credentials, leads)
+        next_str = (
+            f" │ [bold white on #14507d] NEXT: {escape(top.title[:60])} [/]" if top else ""
+        )
+
         banner_text = (
-            f" [bold white]🎯 Targets:[/bold white] {stats['total_targets']} (Pwned: {pwn_str} │ Foothold: {foothold_str}) │ "
+            f" [bold white]🎯 Targets:[/bold white] {stats['total_targets']}{scope_str} (Pwned: {pwn_str} │ Foothold: {foothold_str}) │ "
             f"[bold white]⚡ Services:[/bold white] {stats['total_services']} │ "
             f"[bold white]✔ Checks:[/bold white] {checks_str} │ "
             f"[bold white]★ Findings:[/bold white] {finding_str} │ "
             f"[bold white]🔑 Creds:[/bold white] {stats['total_credentials']} │ "
-            f"[bold white]🚩 Flags:[/bold white] {flag_str} │ "
-            f"[bold white]💡 Leads:[/bold white] {stats['active_leads']}"
+            f"[bold white]🚩 Flags:[/bold white] {flag_str}"
+            f"{next_str}"
         )
         banner.update(banner_text)
 
     def refresh_all_views(self) -> None:
-        targets = self.repo.list_targets()
+        targets, credentials, leads = self._assessment_inputs()
         self.query_one("#target-tree", TargetTreeWidget).populate(targets)
 
-        creds = self.repo.list_credentials()
-        self.query_one("#cred-matrix", CredentialMatrixWidget).populate(creds)
+        self.query_one("#cred-matrix", CredentialMatrixWidget).populate(credentials, targets)
 
-        leads = self.repo.list_leads()
         self.query_one("#lead-board", LeadBoardWidget).populate(leads)
 
         evidence = self.repo.list_evidence()
-        self.query_one("#evidence-view", EvidenceViewWidget).populate(evidence)
+        services_map = {s.id: s for t in targets for s in t.services}
+        checks_map = {c.id: c for s in services_map.values() for c in s.checklists}
+        self.query_one("#evidence-view", EvidenceViewWidget).populate(evidence, services_map, checks_map)
+
+        evidence_by_service: dict = {}
+        for ev in evidence:
+            if ev.service_id is not None:
+                evidence_by_service[ev.service_id] = evidence_by_service.get(ev.service_id, 0) + 1
+        detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
+        detail_widget.evidence_counts = evidence_by_service
 
         pivots = self.repo.list_pivot_routes()
         self.query_one("#pivot-view", PivotViewWidget).populate(pivots)
@@ -343,9 +379,13 @@ class SynapseTUI(App):
             self.notify("Select or add a target first ('a') to launch initial recon.", severity="warning")
             return
 
-        recon_target = self.repo.get_target_by_id(self.selected_target.id)  # type: ignore
+        self._launch_initial_recon(self.repo.get_target_by_id(self.selected_target.id))  # type: ignore
+
+    def _launch_initial_recon(self, recon_target: Optional[Target]) -> None:
+        """Shared phase-0 launcher; also the auto-route destination for 'r' on bare targets."""
         if not recon_target:
             return
+
         recipes = self.methodology.get_initial_recon_commands(recon_target)
         if not recipes:
             self.notify("No initial recon recipes defined in the methodology knowledge base.", severity="warning")
@@ -392,6 +432,142 @@ class SynapseTUI(App):
 
         self.push_screen(InitialReconModal(target_ip=recon_target.ip, recipes=recipes), on_recipe_chosen)
 
+    # -------------------------------------------------------------------------
+    # State-Aware Triage & Rabbit-Hole Detection
+    # -------------------------------------------------------------------------
+    def _evidence_counts_by_target(self) -> tuple[dict, dict]:
+        evidence = self.repo.list_evidence()
+        by_target: dict = {}
+        flags: dict = {}
+        for ev in evidence:
+            by_target[ev.target_id] = by_target.get(ev.target_id, 0) + 1
+            if ev.flag_hash:
+                flags[ev.target_id] = flags.get(ev.target_id, 0) + 1
+        return by_target, flags
+
+    def action_triage(self) -> None:
+        """Opens the state-aware triage board (known / unknown / next move)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        targets, credentials, leads = self._assessment_inputs()
+        if not targets:
+            self.notify("Nothing to triage yet — add a target first ('a').", severity="warning")
+            return
+
+        recon_counts, flag_counts = self._evidence_counts_by_target()
+        valid_by_ip: dict = {}
+        for c in credentials:
+            for ip_key, data in c.tested_targets.items():
+                if isinstance(data, dict) and data.get("valid"):
+                    host = str(ip_key).split(":")[0]
+                    valid_by_ip[host] = valid_by_ip.get(host, 0) + 1
+
+        snapshots = build_snapshots(targets, recon_counts, flag_counts, valid_by_ip)
+        actions = get_next_actions(targets, credentials, leads)
+        focus_ip = self.selected_target.ip if self.selected_target else None
+        self.push_screen(TriageModal(list(snapshots.values()), actions, focus_ip=focus_ip))
+
+    def action_stuck_check(self) -> None:
+        """'I'm stuck' workflow: rabbit-hole analysis with concrete escape routes."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        targets, credentials, leads = self._assessment_inputs()
+        if not targets:
+            self.notify("Nothing to analyze yet — add a target first ('a').", severity="warning")
+            return
+
+        report = detect_rabbit_holes(targets, credentials, leads)
+        self.push_screen(StuckModal(report))
+
+    def action_toggle_scope(self) -> None:
+        """Toggles in-scope state of the selected target and refreshes filtered views."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        if not self.selected_target or self.selected_target.id is None:
+            self.notify("Select a target in the Workbench tree to toggle its scope.", severity="warning")
+            return
+
+        new_scope = not self.selected_target.in_scope
+        self.repo.set_target_scope(self.selected_target.id, new_scope)
+        self.selected_target.in_scope = new_scope
+        state = "in scope" if new_scope else "OUT OF SCOPE"
+        self.notify(f"{self.selected_target.ip} marked {state}.", title="Scope Updated")
+        self.refresh_all_views()
+
+    def action_mark_cred_tested(self) -> None:
+        """Credential lifecycle: cycle the selected credential's test state against the selected target.
+
+        Cycle per host: untested → valid → invalid → untested. Press on the Creds tab.
+        """
+        tabs = self.query_one("#tabs", TabbedContent)
+        if tabs.active != "tab-creds":
+            return
+        if not self.selected_target or self.selected_target.id is None:
+            self.notify("Select a target in the Workbench first — credentials are tested per-host.", severity="warning")
+            return
+
+        table = self.query_one("#cred-table", DataTable)
+        if table.row_count == 0 or table.cursor_row is None:
+            return
+        row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+        try:
+            cred = self.repo.get_credential_by_id(int(row_key))
+        except (ValueError, TypeError):
+            return
+        if not cred:
+            return
+
+        host_ip = self.selected_target.ip
+        entry = cred.tested_targets.get(host_ip) or cred.tested_targets.get(f"{host_ip}:{cred.service_scope}")
+        current_valid = bool(entry.get("valid")) if isinstance(entry, dict) else False
+        was_tested = entry is not None
+
+        if not was_tested:
+            valid, label = True, f"VALID on {host_ip}"
+        elif current_valid:
+            valid, label = False, f"INVALID on {host_ip}"
+        else:
+            # Reset to untested: wipe both host and compound keys for this host
+            remaining = {k: v for k, v in cred.tested_targets.items() if str(k).split(":")[0] != host_ip}
+            self.repo.update_credential_tested_targets(cred.id, remaining)  # type: ignore
+            self.refresh_all_views()
+            self.notify(f"'{cred.username}' reset to untested on {host_ip}.", title="Cred Lifecycle")
+            return
+
+        service_hint = cred.service_scope
+        self.repo.record_credential_test(cred.id, host_ip, service_hint, valid=valid, admin=False)  # type: ignore
+        self.refresh_all_views()
+        self.notify(f"'{cred.username}' marked {label}.", title="Cred Lifecycle")
+
+
+    def _refresh_service_state(self, service: Optional[Service]) -> Service:
+        """Derives service status from its checklist state machine.
+
+        finding -> VULNERABLE, running -> IN_PROGRESS, all dead-end -> DEAD_END,
+        fully resolved -> ENUMERATED. Re-reads the checklist from the repository
+        so callers can pass stale references safely. Returns the fresh model.
+        """
+        if not service or not service.id:
+            return service  # type: ignore
+        fresh = self.repo.get_service_by_id(service.id)
+        if not fresh or not fresh.checklists:
+            return fresh or service
+        statuses = {c.status for c in fresh.checklists}
+        if ChecklistStatus.FINDING in statuses:
+            new_status = ServiceStatus.VULNERABLE
+        elif ChecklistStatus.RUNNING in statuses:
+            new_status = ServiceStatus.IN_PROGRESS
+        elif statuses <= {ChecklistStatus.DEAD_END}:
+            new_status = ServiceStatus.DEAD_END
+        elif statuses <= {ChecklistStatus.CHECKED, ChecklistStatus.FINDING, ChecklistStatus.DEAD_END}:
+            new_status = ServiceStatus.ENUMERATED
+        else:
+            return fresh
+        self.repo.update_service_status(fresh.id, new_status)  # type: ignore
+        fresh.status = new_status
+        return fresh
 
     def action_add_cred(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -471,7 +647,16 @@ class SynapseTUI(App):
 
         tabs = self.query_one("#tabs", TabbedContent)
         if tabs.active != "tab-workbench" or not self.selected_service:
-            self.notify("Select a service in the Workbench to run a recipe.", severity="warning")
+            # Seamless fallback: a fresh target with no service context belongs in phase-0 recon.
+            if self.selected_target and not self.selected_service:
+                self.notify(
+                    f"No service selected — routing to Initial Recon for {self.selected_target.ip}.",
+                    title="Auto-route",
+                    severity="information",
+                )
+                self._launch_initial_recon(self.repo.get_target_by_id(self.selected_target.id))  # type: ignore
+            else:
+                self.notify("Select a service in the Workbench to run a recipe.", severity="warning")
             return
 
         table = self.query_one("#checklist-table", DataTable)
@@ -494,12 +679,14 @@ class SynapseTUI(App):
                     self.repo.add_evidence(
                         target_id=self.selected_target.id,  # type: ignore
                         service_id=self.selected_service.id,  # type: ignore
+                        checklist_id=item.id,
                         proof_type=ProofType.COMMAND_OUTPUT,
                         title=f"Output for: {item.title}",
                         command=res["command"],
                         output=res["output"],
                     )
                     self.repo.update_checklist_status(item.id, ChecklistStatus.CHECKED, output_snippet=res["output"][:200])  # type: ignore
+                    self.selected_service = self._refresh_service_state(self.selected_service)
                     self.refresh_all_views()
                     self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)  # type: ignore
                     self.notify("Command output attached to evidence and check marked complete!", title="Evidence Captured")
@@ -544,6 +731,7 @@ class SynapseTUI(App):
                         target_id=self.selected_target.id,
                     )
 
+                self.selected_service = self._refresh_service_state(self.selected_service)
                 self.refresh_all_views()
                 if self.selected_target and self.selected_service:
                     self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)

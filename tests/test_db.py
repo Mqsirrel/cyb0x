@@ -136,3 +136,61 @@ def test_leads_and_evidence(repo: DatabaseRepository):
     stats = repo.get_stats()
     assert stats["total_targets"] == 1
     assert stats["captured_flags"] == 1
+
+
+def test_target_scope_toggle_and_merge_preservation(repo: DatabaseRepository):
+    target = repo.add_or_get_target("10.10.11.50")
+    assert target.in_scope is True
+
+    assert repo.set_target_scope(target.id, False) is True
+    fetched = repo.get_target_by_id(target.id)
+    assert fetched.in_scope is False
+
+    # Re-adding the same host must NOT silently re-scope it
+    merged = repo.add_or_get_target("10.10.11.50", hostname="mail.corp.local")
+    assert merged.in_scope is False
+    assert merged.hostname == "mail.corp.local"
+
+    # Explicit scope argument still wins on merge
+    repo.add_or_get_target("10.10.11.50", in_scope=True)
+    assert repo.get_target_by_id(target.id).in_scope is True
+
+
+def test_evidence_checklist_relationship_roundtrip(repo: DatabaseRepository):
+    target = repo.add_or_get_target("10.10.11.60")
+    svc = repo.add_or_update_service(target.id, 22, "tcp", "ssh", "OpenSSH", "9.6p1")
+    chk = repo.add_checklist_item(svc.id, title="SSH algo audit", command_template="ssh-audit {IP}")
+
+    ev = repo.add_evidence(
+        target_id=target.id,
+        service_id=svc.id,
+        checklist_id=chk.id,
+        title="Output for: SSH algo audit",
+        command="ssh-audit 10.10.11.60",
+        output="ssh-rsa (rsa-sha2-256) weak",
+    )
+    fetched = repo.get_evidence_by_id(ev.id)
+    assert fetched.checklist_id == chk.id
+    assert fetched.service_id == svc.id
+
+    listed = repo.list_evidence(target_id=target.id)
+    assert any(e.checklist_id == chk.id for e in listed)
+
+
+def test_credential_lifecycle_reset(repo: DatabaseRepository):
+    t1 = repo.add_or_get_target("10.10.11.70")
+    t2 = repo.add_or_get_target("10.10.11.71")
+    cred = repo.add_credential("svc_acc", "pw123", target_id=t1.id)
+
+    repo.record_credential_test(cred.id, "10.10.11.70", service="smb", valid=True, admin=True)
+    repo.record_credential_test(cred.id, "10.10.11.71", valid=False)
+    refreshed = repo.get_credential_by_id(cred.id)
+    assert set(refreshed.tested_targets.keys()) == {"10.10.11.70", "10.10.11.70:smb", "10.10.11.71"}
+
+    # Reset host .70 to untested (wipe host + compound keys, keep .71)
+    remaining = {k: v for k, v in refreshed.tested_targets.items() if not str(k).startswith("10.10.11.70")}
+    assert repo.update_credential_tested_targets(cred.id, remaining) is True
+
+    final = repo.get_credential_by_id(cred.id)
+    assert "10.10.11.70" not in final.tested_targets
+    assert "10.10.11.71" in final.tested_targets

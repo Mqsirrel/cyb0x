@@ -158,6 +158,7 @@ class Evidence(BaseModel):
     target_id: int
     target_ip: Optional[str] = None
     service_id: Optional[int] = None
+    checklist_id: Optional[int] = None
     proof_type: ProofType = ProofType.COMMAND_OUTPUT
     title: str
     command: str = ""
