@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from pathlib import Path
@@ -167,3 +168,4 @@ class MethodologyEngine:
             return replacements.get(token, match.group(0))
 
         return re.sub(r"\{(\w+)\}", replace_token, rendered)
+
