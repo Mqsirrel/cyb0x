@@ -215,11 +215,11 @@ async def test_theme_modal_switcher():
         await pilot.pause(0.1)
         assert isinstance(app.screen, ThemeModal)
 
-        # Select tokyo-night
+        # Select claudish-light
         await pilot.press("down")
         await pilot.press("enter")
         await pilot.pause(0.1)
-        assert app.theme == "tokyo-night"
+        assert app.theme == "claudish-light"
 
         # Switch back to claudish
         await pilot.press("T")

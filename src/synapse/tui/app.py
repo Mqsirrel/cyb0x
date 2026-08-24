@@ -55,6 +55,7 @@ from synapse.tui.modals.theme_modal import ThemeModal
 from synapse.tui.modals.triage_modal import TriageModal
 from synapse.tui.theme import (
     BACKGROUND,
+    CLAUDISH_LIGHT_THEME,
     CLAUDISH_THEME,
     ERROR_RED,
     KRAFT,
@@ -254,6 +255,7 @@ class SynapseTUI(App):
 
         # Register Claudish & Synapse themes
         self.register_theme(CLAUDISH_THEME)
+        self.register_theme(CLAUDISH_LIGHT_THEME)
         self.register_theme(SYNAPSE_THEME)
         self.theme = "claudish"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)

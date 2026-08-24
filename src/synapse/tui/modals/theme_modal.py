@@ -15,7 +15,8 @@ from synapse.tui.theme import TERRACOTTA, MUTED
 
 
 THEME_CATALOG = [
-    ("claudish", "Claudish (Warm Obsidian & Terracotta)", "✦ Default offensive pentest palette"),
+    ("claudish", "Claudish Dark (Warm Obsidian & Terracotta)", "✦ Default offensive pentest dark palette"),
+    ("claudish-light", "Claudish Light (Parchment Paper & Terracotta)", "✦ Clean warm light palette inspired by Claude"),
     ("tokyo-night", "Tokyo Night (Deep Indigo & Cyber Neon)", "Vibrant neon cyberpunk aesthetic"),
     ("nord", "Nord (Arctic Ice Blue & Slate)", "Clean cool minimalist frost tones"),
     ("gruvbox", "Gruvbox (Warm Retro Dark)", "High-contrast earthy retro palette"),

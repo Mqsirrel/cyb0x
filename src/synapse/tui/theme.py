@@ -49,6 +49,26 @@ CLAUDISH_THEME = Theme(
     },
 )
 
+CLAUDISH_LIGHT_THEME = Theme(
+    name="claudish-light",
+    primary="#C75D38",
+    secondary="#A3704C",
+    accent="#5E7E45",
+    foreground="#211E1B",
+    background="#FAF6F0",
+    surface="#F0E9DF",
+    panel="#E3D8C8",
+    warning="#A3704C",
+    error="#B83E28",
+    success="#4A7A38",
+    dark=False,
+    variables={
+        "text-muted": "#786F66",
+        "surface-raised": "#E3D8C8",
+        "block-cursor-background": "#C75D38",
+    },
+)
+
 SYNAPSE_THEME = Theme(
     name="synapse",
     primary=TERRACOTTA,
