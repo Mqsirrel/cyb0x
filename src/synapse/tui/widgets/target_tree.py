@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import List, Optional
 from rich.markup import escape
 from textual.widgets import Tree
-from textual.widgets.tree import TreeNode
 
 from synapse.models import Target, TargetStatus
 

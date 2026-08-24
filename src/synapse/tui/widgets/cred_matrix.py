@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
 from synapse.models import Credential, Target
+from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
 class CredentialMatrixWidget(Vertical):
@@ -28,6 +29,7 @@ class CredentialMatrixWidget(Vertical):
         targets = targets or []
         live_targets = [t for t in targets if t.in_scope]
         table = self.query_one("#cred-table", DataTable)
+        prev_cursor = capture_cursor(table)
         table.clear()
 
         for c in credentials:
@@ -73,3 +75,4 @@ class CredentialMatrixWidget(Vertical):
                 spray_str,
                 key=str(c.id),
             )
+        restore_cursor(table, prev_cursor)

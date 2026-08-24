@@ -8,7 +8,8 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
-from synapse.models import ChecklistItem, ChecklistStatus, Service, Target
+from synapse.models import ChecklistStatus, Service, Target
+from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
 class ServiceDetailWidget(Vertical):
@@ -75,6 +76,7 @@ class ServiceDetailWidget(Vertical):
         )
 
         table = self.query_one("#checklist-table", DataTable)
+        prev_cursor = capture_cursor(table)
         table.clear()
 
         status_styles = {
@@ -95,6 +97,7 @@ class ServiceDetailWidget(Vertical):
                 f"[cyan]{escape(cmd_preview)}[/cyan]",
                 key=str(item.id),
             )
+        restore_cursor(table, prev_cursor)
 
     def display_empty(self, message: str = "Select a target or service from the left sidebar.") -> None:
         header = self.query_one("#service-header", Static)

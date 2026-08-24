@@ -18,7 +18,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional
 from datetime import datetime, timezone
 
 from synapse.db.migrations import run_migrations
@@ -606,7 +606,6 @@ class DatabaseRepository:
                 """,
                 (username, secret, domain),
             ).fetchone()
-            now = datetime.now(timezone.utc)
             target_ip: Optional[str] = None
             if target_id is not None:
                 t_row = conn.execute("SELECT ip FROM targets WHERE id = ?", (target_id,)).fetchone()

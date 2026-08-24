@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.widgets import Static, DataTable
 
 from synapse.models import ChecklistItem, Evidence, Service
+from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
 class EvidenceViewWidget(Vertical):
@@ -36,6 +37,7 @@ class EvidenceViewWidget(Vertical):
         services_map = services_map or {}
         checks_map = checks_map or {}
         table = self.query_one("#evidence-table", DataTable)
+        prev_cursor = capture_cursor(table)
         table.clear()
 
         for ev in evidence_list:
@@ -68,3 +70,4 @@ class EvidenceViewWidget(Vertical):
                 ev.created_at.strftime("%Y-%m-%d %H:%M"),
                 key=str(ev.id),
             )
+        restore_cursor(table, prev_cursor)

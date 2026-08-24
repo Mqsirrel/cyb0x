@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 from rich.markup import escape
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -31,12 +32,8 @@ from synapse.export.markdown_exporter import export_markdown_report, export_obsi
 from synapse.export.notion_exporter import export_notion_workspace
 from synapse.methodology.engine import MethodologyEngine
 from synapse.models import (
-    ChecklistItem,
     ChecklistStatus,
-    Credential,
     CredentialType,
-    Evidence,
-    Lead,
     LeadPriority,
     LeadStatus,
     ProofType,
@@ -138,12 +135,16 @@ class SynapseTUI(App):
         Binding("q", "quit", "Quit"),
     ]
 
-    def __init__(self, db_path: str | Path = ":memory:", **kwargs):
+    def __init__(self, db_path: str | Path = ":memory:", repo: Optional[DatabaseRepository] = None, **kwargs):
         super().__init__(**kwargs)
-        self.repo = DatabaseRepository(db_path)
+        self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
         self.selected_target: Optional[Target] = None
         self.selected_service: Optional[Service] = None
+        # Cached workspace snapshot (single source for all widgets) + per-tab
+        # dirty tracking so mutations only rebuild the visible tab immediately.
+        self._snapshot: Optional[dict] = None
+        self._dirty_tabs: set = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -197,13 +198,64 @@ class SynapseTUI(App):
             tree.root.children[0].expand()
 
     def _assessment_inputs(self):
-        """Batched repo data shared by the banner, triage, and stuck workflows."""
+        """Fresh batched repo data (targets, credentials, leads) for cold paths."""
         targets = self.repo.list_targets()
         credentials = self.repo.list_credentials()
         leads = self.repo.list_leads()
         return targets, credentials, leads
 
-    def update_stats_banner(self) -> None:
+    def _load_snapshot(self) -> dict:
+        """Loads every dataset the UI needs in one pass and caches the result.
+
+        This replaces the old pattern of re-querying targets/creds/leads twice
+        per refresh (once for widgets, once again inside the stats banner).
+        """
+        targets = self.repo.list_targets()
+        credentials = self.repo.list_credentials()
+        leads = self.repo.list_leads()
+        evidence = self.repo.list_evidence()
+        pivots = self.repo.list_pivot_routes()
+
+        services_map = {s.id: s for t in targets for s in t.services}
+        checks_map = {c.id: c for s in services_map.values() for c in s.checklists}
+        evidence_by_service: dict = {}
+        for ev in evidence:
+            if ev.service_id is not None:
+                evidence_by_service[ev.service_id] = evidence_by_service.get(ev.service_id, 0) + 1
+
+        snap = {
+            "targets": targets,
+            "credentials": credentials,
+            "leads": leads,
+            "evidence": evidence,
+            "pivots": pivots,
+            "services_map": services_map,
+            "checks_map": checks_map,
+            "evidence_by_service": evidence_by_service,
+        }
+        self._snapshot = snap
+        return snap
+
+    _ALL_TABS = ("tab-workbench", "tab-creds", "tab-leads", "tab-evidence", "tab-pivots")
+
+    def _populate_tab(self, tab_id: str, snap: dict) -> None:
+        """Rebuilds a single tab's widgets from an already-loaded snapshot."""
+        if tab_id == "tab-workbench":
+            self.query_one("#target-tree", TargetTreeWidget).populate(snap["targets"])
+            detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
+            detail_widget.evidence_counts = snap["evidence_by_service"]
+        elif tab_id == "tab-creds":
+            self.query_one("#cred-matrix", CredentialMatrixWidget).populate(snap["credentials"], snap["targets"])
+        elif tab_id == "tab-leads":
+            self.query_one("#lead-board", LeadBoardWidget).populate(snap["leads"])
+        elif tab_id == "tab-evidence":
+            self.query_one("#evidence-view", EvidenceViewWidget).populate(
+                snap["evidence"], snap["services_map"], snap["checks_map"]
+            )
+        elif tab_id == "tab-pivots":
+            self.query_one("#pivot-view", PivotViewWidget).populate(snap["pivots"])
+
+    def update_stats_banner(self, snap: Optional[dict] = None) -> None:
         stats = self.repo.get_stats()
         banner = self.query_one("#stats-banner", Static)
         pwn_str = f"[bold green]{stats['pwned_targets']}[/bold green]"
@@ -212,7 +264,10 @@ class SynapseTUI(App):
         finding_str = f"[bold red]{stats['total_findings']}[/bold red]"
         checks_str = f"[cyan]{stats['completed_checks']}/{stats['total_checks']}[/cyan]"
 
-        targets, credentials, leads = self._assessment_inputs()
+        if snap is not None:
+            targets, credentials, leads = snap["targets"], snap["credentials"], snap["leads"]
+        else:
+            targets, credentials, leads = self._assessment_inputs()
         oos = sum(1 for t in targets if not t.in_scope)
         scope_str = f" ({len(targets) - oos} in-scope)" if oos else ""
 
@@ -233,39 +288,58 @@ class SynapseTUI(App):
         banner.update(banner_text)
 
     def refresh_all_views(self) -> None:
-        targets, credentials, leads = self._assessment_inputs()
-        self.query_one("#target-tree", TargetTreeWidget).populate(targets)
+        """Full synchronous refresh of every view from one freshly loaded snapshot."""
+        snap = self._load_snapshot()
 
-        self.query_one("#cred-matrix", CredentialMatrixWidget).populate(credentials, targets)
-
-        self.query_one("#lead-board", LeadBoardWidget).populate(leads)
-
-        evidence = self.repo.list_evidence()
-        services_map = {s.id: s for t in targets for s in t.services}
-        checks_map = {c.id: c for s in services_map.values() for c in s.checklists}
-        self.query_one("#evidence-view", EvidenceViewWidget).populate(evidence, services_map, checks_map)
-
-        evidence_by_service: dict = {}
-        for ev in evidence:
-            if ev.service_id is not None:
-                evidence_by_service[ev.service_id] = evidence_by_service.get(ev.service_id, 0) + 1
+        self.query_one("#target-tree", TargetTreeWidget).populate(snap["targets"])
         detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
-        detail_widget.evidence_counts = evidence_by_service
+        detail_widget.evidence_counts = snap["evidence_by_service"]
 
-        pivots = self.repo.list_pivot_routes()
-        self.query_one("#pivot-view", PivotViewWidget).populate(pivots)
+        self.query_one("#cred-matrix", CredentialMatrixWidget).populate(snap["credentials"], snap["targets"])
+        self.query_one("#lead-board", LeadBoardWidget).populate(snap["leads"])
+        self.query_one("#evidence-view", EvidenceViewWidget).populate(
+            snap["evidence"], snap["services_map"], snap["checks_map"]
+        )
+        self.query_one("#pivot-view", PivotViewWidget).populate(snap["pivots"])
 
-        self.update_stats_banner()
+        self.update_stats_banner(snap)
+        self._dirty_tabs.clear()
 
         # If nothing is currently selected and targets exist, select the first target and service
-        if not self.selected_target and targets:
-            self.selected_target = targets[0]
-            detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
-            if targets[0].services:
-                self.selected_service = targets[0].services[0]
-                detail_widget.display_service(targets[0], targets[0].services[0])
+        if not self.selected_target and snap["targets"]:
+            first = snap["targets"][0]
+            self.selected_target = first
+            if first.services:
+                self.selected_service = first.services[0]
+                detail_widget.display_service(first, first.services[0])
             else:
-                detail_widget.display_empty(f"Target {targets[0].ip} has no open services recorded.")
+                self.selected_service = None
+                detail_widget.display_empty(f"Target {first.ip} has no open services recorded.")
+
+    def refresh_active_view(self) -> None:
+        """Fast-path refresh after mutations.
+
+        Loads the workspace snapshot once, rebuilds only the visible tab now,
+        and marks hidden tabs dirty so they repopulate lazily when opened —
+        instead of rebuilding all five tabs on every keystroke.
+        """
+        snap = self._load_snapshot()
+        active = self.query_one("#tabs", TabbedContent).active
+        if active is None:
+            for tab_id in self._ALL_TABS:
+                self._populate_tab(tab_id, snap)
+            self._dirty_tabs.clear()
+        else:
+            self._populate_tab(active, snap)
+            self._dirty_tabs = {t for t in self._ALL_TABS if t != active}
+        self.update_stats_banner(snap)
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Lazily repopulates tabs that went stale while they were hidden."""
+        pane_id = event.pane.id if event.pane is not None else None
+        if pane_id and pane_id in self._dirty_tabs and self._snapshot is not None:
+            self._populate_tab(pane_id, self._snapshot)
+            self._dirty_tabs.discard(pane_id)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         node_data = event.node.data
@@ -322,7 +396,7 @@ class SynapseTUI(App):
                         description=rc.get("description", ""),
                         command_template=cmd,
                     )
-            self.refresh_all_views()
+            self.refresh_active_view()
             self.notify(f"Target {t.ip} added successfully", title="Target Added")
 
         self.push_screen(AddTargetModal(), on_result)
@@ -419,7 +493,7 @@ class SynapseTUI(App):
                 if fresh.status == TargetStatus.DISCOVERED:
                     self.repo.update_target_status(fresh.id, TargetStatus.SCANNING)
 
-                self.refresh_all_views()
+                self.refresh_active_view()
                 self.query_one("#tabs", TabbedContent).active = "tab-workbench"
 
                 if ingested:
@@ -437,8 +511,9 @@ class SynapseTUI(App):
     # -------------------------------------------------------------------------
     # State-Aware Triage & Rabbit-Hole Detection
     # -------------------------------------------------------------------------
-    def _evidence_counts_by_target(self) -> tuple[dict, dict]:
-        evidence = self.repo.list_evidence()
+    def _evidence_counts_by_target(self, evidence: Optional[list] = None) -> tuple[dict, dict]:
+        if evidence is None:
+            evidence = self.repo.list_evidence()
         by_target: dict = {}
         flags: dict = {}
         for ev in evidence:
@@ -452,12 +527,13 @@ class SynapseTUI(App):
         if isinstance(self.screen, ModalScreen):
             return
 
-        targets, credentials, leads = self._assessment_inputs()
+        snap = self._load_snapshot()
+        targets, credentials, leads = snap["targets"], snap["credentials"], snap["leads"]
         if not targets:
             self.notify("Nothing to triage yet — add a target first ('a').", severity="warning")
             return
 
-        recon_counts, flag_counts = self._evidence_counts_by_target()
+        recon_counts, flag_counts = self._evidence_counts_by_target(snap["evidence"])
         valid_by_ip: dict = {}
         for c in credentials:
             for ip_key, data in c.tested_targets.items():
@@ -475,7 +551,8 @@ class SynapseTUI(App):
         if isinstance(self.screen, ModalScreen):
             return
 
-        targets, credentials, leads = self._assessment_inputs()
+        snap = self._load_snapshot()
+        targets, credentials, leads = snap["targets"], snap["credentials"], snap["leads"]
         if not targets:
             self.notify("Nothing to analyze yet — add a target first ('a').", severity="warning")
             return
@@ -496,7 +573,7 @@ class SynapseTUI(App):
         self.selected_target.in_scope = new_scope
         state = "in scope" if new_scope else "OUT OF SCOPE"
         self.notify(f"{self.selected_target.ip} marked {state}.", title="Scope Updated")
-        self.refresh_all_views()
+        self.refresh_active_view()
 
     def action_mark_cred_tested(self) -> None:
         """Credential lifecycle: cycle the selected credential's test state against the selected target.
@@ -534,13 +611,13 @@ class SynapseTUI(App):
             # Reset to untested: wipe both host and compound keys for this host
             remaining = {k: v for k, v in cred.tested_targets.items() if str(k).split(":")[0] != host_ip}
             self.repo.update_credential_tested_targets(cred.id, remaining)  # type: ignore
-            self.refresh_all_views()
+            self.refresh_active_view()
             self.notify(f"'{cred.username}' reset to untested on {host_ip}.", title="Cred Lifecycle")
             return
 
         service_hint = cred.service_scope
         self.repo.record_credential_test(cred.id, host_ip, service_hint, valid=valid, admin=False)  # type: ignore
-        self.refresh_all_views()
+        self.refresh_active_view()
         self.notify(f"'{cred.username}' marked {label}.", title="Cred Lifecycle")
 
 
@@ -587,7 +664,7 @@ class SynapseTUI(App):
                 service_scope=res.get("service_scope", ""),
                 target_id=t_id,
             )
-            self.refresh_all_views()
+            self.refresh_active_view()
             self.notify(f"Credential '{res['username']}' saved to vault", title="Credential Added")
 
         self.push_screen(AddCredModal(), on_result)
@@ -607,7 +684,7 @@ class SynapseTUI(App):
                 status=LeadStatus.BACKLOG,
                 target_id=t_id,
             )
-            self.refresh_all_views()
+            self.refresh_active_view()
             self.notify(f"Lead '{res['title']}' added", title="Lead Recorded")
 
         self.push_screen(AddLeadModal(), on_result)
@@ -638,7 +715,7 @@ class SynapseTUI(App):
             elif res["proof_type"] == "user_flag" and self.selected_target.status != TargetStatus.PWNED:
                 self.repo.update_target_status(self.selected_target.id, TargetStatus.FOOTHOLD)  # type: ignore
 
-            self.refresh_all_views()
+            self.refresh_active_view()
             self.notify("Proof flag / evidence captured!", title="Evidence Saved")
 
         self.push_screen(AddEvidenceModal(), on_result)
@@ -689,7 +766,7 @@ class SynapseTUI(App):
                     )
                     self.repo.update_checklist_status(item.id, ChecklistStatus.CHECKED, output_snippet=res["output"][:200])  # type: ignore
                     self.selected_service = self._refresh_service_state(self.selected_service)
-                    self.refresh_all_views()
+                    self.refresh_active_view()
                     self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)  # type: ignore
                     self.notify("Command output attached to evidence and check marked complete!", title="Evidence Captured")
 
@@ -734,12 +811,12 @@ class SynapseTUI(App):
                     )
 
                 self.selected_service = self._refresh_service_state(self.selected_service)
-                self.refresh_all_views()
+                self.refresh_active_view()
                 if self.selected_target and self.selected_service:
                     self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)
 
-            except Exception:
-                pass
+            except Exception as e:
+                self.notify(f"Could not toggle check status: {e}", severity="error")
 
         elif tabs.active == "tab-leads":
             table = self.query_one("#lead-table", DataTable)
@@ -759,9 +836,36 @@ class SynapseTUI(App):
                     LeadStatus.REJECTED: LeadStatus.BACKLOG,
                 }
                 self.repo.update_lead_status(lead.id, lead_cycle.get(lead.status, LeadStatus.IN_PROGRESS))  # type: ignore
-                self.refresh_all_views()
-            except Exception:
-                pass
+                self.refresh_active_view()
+            except Exception as e:
+                self.notify(f"Could not update lead status: {e}", severity="error")
+
+    @work(thread=True, exclusive=True, group="export")
+    def _run_export_worker(self, fmt: str, out_path: Path) -> None:
+        """Runs report generation off the UI thread; notifies when finished."""
+        try:
+            if fmt == "notion":
+                export_notion_workspace(self.repo, out_path)
+                message = f"Notion workspace exported to {out_path}"
+            elif fmt == "markdown":
+                report_md = export_markdown_report(self.repo)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(report_md, encoding="utf-8")
+                message = f"Markdown report exported to {out_path}"
+            elif fmt == "obsidian":
+                export_obsidian_vault(self.repo, out_path)
+                message = f"Obsidian vault notes exported to {out_path}"
+            elif fmt == "json":
+                json_data = export_workspace_json(self.repo)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json_data, encoding="utf-8")
+                message = f"Workspace JSON backup saved to {out_path}"
+            else:
+                message = f"Unknown export format: {fmt}"
+        except Exception as e:
+            self.call_from_thread(self.notify, f"Export failed: {e}", title="Export Error", severity="error")
+            return
+        self.call_from_thread(self.notify, message, title="Export Success")
 
     def action_export_report(self) -> None:
         if isinstance(self.screen, ModalScreen):
@@ -772,25 +876,6 @@ class SynapseTUI(App):
                 return
             fmt = res["format"]
             out_path = Path(res["output_path"]).expanduser().resolve()
-
-            if fmt == "notion":
-                export_notion_workspace(self.repo, out_path)
-                self.notify(f"Notion workspace exported to {out_path}", title="Export Success")
-
-            elif fmt == "markdown":
-                report_md = export_markdown_report(self.repo)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(report_md, encoding="utf-8")
-                self.notify(f"Markdown report exported to {out_path}", title="Export Success")
-
-            elif fmt == "obsidian":
-                export_obsidian_vault(self.repo, out_path)
-                self.notify(f"Obsidian vault notes exported to {out_path}", title="Export Success")
-
-            elif fmt == "json":
-                json_data = export_workspace_json(self.repo)
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(json_data, encoding="utf-8")
-                self.notify(f"Workspace JSON backup saved to {out_path}", title="Export Success")
+            self._run_export_worker(fmt, out_path)
 
         self.push_screen(ExportModal(), on_result)

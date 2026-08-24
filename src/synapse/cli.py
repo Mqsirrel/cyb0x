@@ -60,7 +60,7 @@ def main(ctx: click.Context, workspace: str, db_path: Optional[str]) -> None:
     if ctx.invoked_subcommand is None:
         from synapse.tui.app import SynapseTUI
 
-        tui = SynapseTUI(db_path=ctx.obj["db_path"])
+        tui = SynapseTUI(repo=ctx.obj["repo"])
         tui.run()
 
 
@@ -70,7 +70,7 @@ def tui(ctx: click.Context) -> None:
     """Launch the interactive terminal user interface."""
     from synapse.tui.app import SynapseTUI
 
-    app = SynapseTUI(db_path=ctx.obj["db_path"])
+    app = SynapseTUI(repo=ctx.obj["repo"])
     app.run()
 
 

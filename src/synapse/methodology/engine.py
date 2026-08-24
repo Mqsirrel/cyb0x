@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import re
-import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
-from synapse.models import ChecklistItem, ChecklistStatus, Service, Target
+from synapse.models import Service, Target
 
 
 class MethodologyEngine:

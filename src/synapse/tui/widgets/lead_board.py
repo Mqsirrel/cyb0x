@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
 from synapse.models import Lead, LeadPriority, LeadStatus
+from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
 class LeadBoardWidget(Vertical):
@@ -23,6 +24,7 @@ class LeadBoardWidget(Vertical):
 
     def populate(self, leads: List[Lead]) -> None:
         table = self.query_one("#lead-table", DataTable)
+        prev_cursor = capture_cursor(table)
         table.clear()
 
         priority_colors = {
@@ -53,3 +55,4 @@ class LeadBoardWidget(Vertical):
                 escape(desc_preview),
                 key=str(l.id),
             )
+        restore_cursor(table, prev_cursor)
