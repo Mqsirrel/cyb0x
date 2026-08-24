@@ -77,14 +77,29 @@ class SynapseTUI(App):
     SUB_TITLE = "eJPTv2 • OSCP • CTFs • Authorized Labs"
     CSS = """
     Screen {
-        background: $surface;
+        background: $background;
+    }
+    Header {
+        background: #191715;
+        color: $foreground;
+    }
+    Footer {
+        background: #191715;
+        color: $text-muted;
+    }
+    #stats-banner {
+        height: 1;
+        background: #191715;
+        color: $foreground;
+        padding: 0 1;
+        border-bottom: solid $surface-raised;
     }
     #main-container {
         height: 1fr;
     }
     #sidebar-pane {
         width: 32%;
-        border-right: heavy $primary;
+        border-right: solid $surface-raised;
         height: 100%;
     }
     #content-pane {
@@ -92,31 +107,106 @@ class SynapseTUI(App):
         height: 100%;
         padding: 0 1;
     }
-    #stats-banner {
-        height: 1;
-        background: $surface-darken-1;
-        color: $text;
-        padding: 0 1;
-        text-style: bold;
-        border-bottom: solid $primary-darken-2;
-    }
     TargetTreeWidget {
         background: transparent;
     }
+    Tree {
+        background: transparent;
+        padding: 0 1;
+    }
+    Tree:focus .tree--cursor {
+        background: #383028;
+        color: $foreground;
+        text-style: bold;
+    }
+    .tree--cursor {
+        background: #2a2520;
+        color: $foreground;
+    }
+    
+    /* Tabs & TabbedContent styling */
+    TabbedContent {
+        height: 1fr;
+    }
+    Tabs {
+        background: #191715;
+        border-bottom: solid $surface-raised;
+        height: 3;
+    }
+    Tab {
+        padding: 0 2;
+        background: transparent;
+        color: $text-muted;
+        text-style: none;
+    }
+    Tab:hover {
+        color: $foreground;
+        background: #26221e;
+    }
+    Tab.-active {
+        color: $foreground;
+        text-style: bold;
+        background: #2c2722;
+        border-bottom: tall $primary;
+    }
+    Tabs:focus Tab.-active {
+        background: #352e27;
+    }
+    Underline {
+        display: none;
+    }
+    
+    /* DataTable styling */
     DataTable {
         height: 1fr;
-        border: round $primary;
+        background: transparent;
+        border: round $surface-raised;
     }
+    DataTable > .datatable--header {
+        background: #191715;
+        color: #8c8273;
+        text-style: bold;
+        border-bottom: solid $surface-raised;
+    }
+    DataTable > .datatable--cursor {
+        background: #332b24;
+        color: $foreground;
+        text-style: bold;
+    }
+    DataTable:focus > .datatable--cursor {
+        background: #4a3b30;
+        color: $foreground;
+        text-style: bold;
+    }
+    DataTable > .datatable--hover {
+        background: #24201c;
+    }
+    
+    /* Service Info panel */
     #service-info {
         height: auto;
         padding: 1;
-        background: $panel;
+        background: #26221e;
         margin-bottom: 1;
-        border: solid $secondary;
+        border: round $surface-raised;
     }
     #checklist-title {
         margin-top: 1;
         margin-bottom: 1;
+    }
+    
+    /* Sleek Scrollbar */
+    ScrollBar {
+        background: transparent;
+        color: #38312a;
+    }
+    ScrollBar > .scrollbar--thumb {
+        background: #473f36;
+        color: #473f36;
+    }
+    ScrollBar > .scrollbar--thumb:hover {
+        background: $primary;
+        color: $primary;
     }
     """
 
