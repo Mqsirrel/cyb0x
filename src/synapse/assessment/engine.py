@@ -298,7 +298,9 @@ def unsprayed_hosts_for_credential(cred: Credential, targets: list[Target]) -> l
     return [
         t.ip
         for t in targets
-        if t.in_scope and t.status != TargetStatus.IGNORED and t.ip not in tested_hosts
+        if t.in_scope
+        and t.status not in (TargetStatus.IGNORED, TargetStatus.PWNED)
+        and t.ip not in tested_hosts
     ]
 
 
@@ -326,6 +328,8 @@ def get_next_actions(
 
     # 1. Bare targets: phase-0 recon is always the first move.
     for t in live_targets:
+        if t.status == TargetStatus.PWNED:
+            continue
         snap = snapshots[t.ip]
         if snap.is_bare:
             actions.append(
@@ -362,8 +366,29 @@ def get_next_actions(
     # source of truth here (service status is a derived cache that callers
     # may not have refreshed).
     for t in live_targets:
-        if t.status in (TargetStatus.FOOTHOLD, TargetStatus.PWNED):
+        if t.status == TargetStatus.PWNED:
             continue
+        if t.status == TargetStatus.FOOTHOLD:
+            for s in t.services:
+                privesc_findings = [
+                    c.title for c in s.checklists
+                    if c.status == ChecklistStatus.FINDING and c.category == "privesc"
+                ]
+                if not privesc_findings:
+                    continue
+                label = privesc_findings[0] + (f" (+{len(privesc_findings) - 1} more)" if len(privesc_findings) > 1 else "")
+                actions.append(
+                    NextAction(
+                        priority=PRIORITY_EXPLOIT,
+                        kind="exploit",
+                        title=f"Exploit confirmed privilege-escalation finding '{label}' on {t.ip}:{s.port}",
+                        rationale=f"{len(privesc_findings)} privilege-escalation finding(s) confirmed on compromised host — exploit to achieve root.",
+                        target_ip=t.ip,
+                        port=s.port,
+                    )
+                )
+            continue
+
         for s in t.services:
             findings = [c.title for c in s.checklists if c.status == ChecklistStatus.FINDING]
             if not findings:
@@ -380,18 +405,20 @@ def get_next_actions(
                 )
             )
 
-    # 2.7 Owned-but-not-rooted hosts with no open work: the main line is now
-    # local privilege escalation. Without this nudge the triage board goes
-    # silent at the exact moment the tester most needs direction (post-exploit).
-    # Findings are deliberately NOT counted as open here: section 2.5 already
-    # retires finding-nags once a host is owned, so counting them would keep
-    # the host silent forever.
+    # 2.7 Owned-but-not-rooted hosts with no open privesc findings or running work:
+    # the main line is now local privilege escalation. Without this nudge the
+    # triage board goes silent at the exact moment the tester most needs direction.
     for t in live_targets:
         if t.status != TargetStatus.FOOTHOLD:
             continue
         snap = snapshots[t.ip]
-        if snap.checks_todo or snap.checks_running:
-            continue  # pending surface / interrupted work already drive actions below
+        has_privesc_findings = any(
+            c.status == ChecklistStatus.FINDING and c.category == "privesc"
+            for s in t.services
+            for c in s.checklists
+        )
+        if has_privesc_findings or snap.checks_running:
+            continue  # privesc exploit action (section 2.5) or resume action (section 5) handle this
         actions.append(
             NextAction(
                 priority=PRIORITY_EXPLOIT,
@@ -404,6 +431,8 @@ def get_next_actions(
 
     # 3. Untested services with pending methodology checks.
     for t in live_targets:
+        if t.status == TargetStatus.PWNED:
+            continue
         snap = snapshots[t.ip]
         if snap.is_bare:
             continue
@@ -453,6 +482,8 @@ def get_next_actions(
 
     # 5. Resume interrupted work.
     for t in live_targets:
+        if t.status == TargetStatus.PWNED:
+            continue
         running = [(s, c) for s in t.services for c in s.checklists if c.status == ChecklistStatus.RUNNING]
         if running:
             s0, c0 = running[0]
@@ -538,15 +569,16 @@ def detect_rabbit_holes(
             if svc.status == ServiceStatus.DEAD_END:
                 report.dead_end_services.append(svc_tag)
             elif svc.status == ServiceStatus.UNTESTED and not _disproven_service(svc):
-                report.untested_ports.append(svc_tag)
+                if not svc.checklists and t.status != TargetStatus.PWNED:
+                    report.untested_ports.append(svc_tag)
 
             for chk in svc.checklists:
                 tag = f"{svc_tag} — {chk.title}"
                 if chk.status == ChecklistStatus.DEAD_END:
                     report.dead_end_checks.append(tag)
-                elif chk.status == ChecklistStatus.RUNNING:
+                elif chk.status == ChecklistStatus.RUNNING and t.status != TargetStatus.PWNED:
                     report.running_checks.append(tag)
-                elif chk.status == ChecklistStatus.TODO:
+                elif chk.status == ChecklistStatus.TODO and t.status != TargetStatus.PWNED:
                     report.untested_ports.append(tag)
 
     for lead in leads:
@@ -622,7 +654,7 @@ def evaluate_phase_progress(
 
     Semantics (all data-driven from the profile):
     - Checks route to phases via ``checklist_categories`` (first phase by
-      order wins when categories overlap).
+       order wins when categories overlap).
     - A phase is BLOCKED until every ``depends_on`` phase is COMPLETED,
       unless any ``prerequisites`` condition is met (non-linear branch jump).
     - A phase is COMPLETED when no pending/running checks remain AND every
@@ -759,6 +791,7 @@ def evaluate_phase_progress(
             waiting_on = ", ".join(d for d in (p.depends_on or []))
             prog.phase_status = PhaseStatus.BLOCKED
             prog.blocked_reason = f"Waiting on phase(s): {waiting_on}" if waiting_on else "Prerequisites not met."
+            prog.recommended_actions = []
             continue
 
         if prog.pending_checks or prog.running_checks:
@@ -792,5 +825,7 @@ def evaluate_phase_progress(
             if (prog.completed_checks or prog.findings or prog.dead_ends or prog.evidence)
             else PhaseStatus.NOT_STARTED
         )
+        if target.status == TargetStatus.PWNED:
+            prog.recommended_actions = []
 
     return progress
