@@ -15,8 +15,29 @@ instant and reproducible.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class PhaseStatus(str, Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+@dataclass
+class PhaseProgress:
+    phase_id: str
+    completed_checks: list[str] = field(default_factory=list)
+    pending_checks: list[str] = field(default_factory=list)
+    running_checks: list[str] = field(default_factory=list)
+    dead_ends: list[str] = field(default_factory=list)
+    findings: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    recommended_actions: list[NextAction] = field(default_factory=list)
+    phase_status: PhaseStatus = PhaseStatus.NOT_STARTED
+
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
 
 from synapse.models import (
     ChecklistStatus,
@@ -51,7 +72,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _unique_by_ip(targets: List[Target]) -> List[Target]:
+def _unique_by_ip(targets: list[Target]) -> list[Target]:
     """Collapses duplicate target rows for the same IP (first occurrence wins).
 
     Hand-built model lists can carry the same host twice; without this, a bare
@@ -59,7 +80,7 @@ def _unique_by_ip(targets: List[Target]) -> List[Target]:
     for an already-scanned host.
     """
     seen: set = set()
-    unique: List[Target] = []
+    unique: list[Target] = []
     for t in targets:
         if t.ip in seen:
             continue
@@ -157,8 +178,8 @@ class NextAction:
     kind: str  # recon | exploit | enum | spray | resume | cleanup
     title: str
     rationale: str
-    target_ip: Optional[str] = None
-    port: Optional[int] = None
+    target_ip: str | None = None
+    port: int | None = None
 
     @property
     def priority_label(self) -> str:
@@ -169,13 +190,13 @@ class NextAction:
 class StuckReport:
     """Rabbit-hole triage: separates proven dead ends from untouched surface."""
 
-    dead_end_services: List[str] = field(default_factory=list)
-    dead_end_checks: List[str] = field(default_factory=list)
-    running_checks: List[str] = field(default_factory=list)
-    untested_ports: List[str] = field(default_factory=list)
-    unsprayed_credentials: List[str] = field(default_factory=list)
-    stale_leads: List[str] = field(default_factory=list)
-    suggestions: List[NextAction] = field(default_factory=list)
+    dead_end_services: list[str] = field(default_factory=list)
+    dead_end_checks: list[str] = field(default_factory=list)
+    running_checks: list[str] = field(default_factory=list)
+    untested_ports: list[str] = field(default_factory=list)
+    unsprayed_credentials: list[str] = field(default_factory=list)
+    stale_leads: list[str] = field(default_factory=list)
+    suggestions: list[NextAction] = field(default_factory=list)
 
     @property
     def is_stuck(self) -> bool:
@@ -194,15 +215,15 @@ class StuckReport:
         return has_activity and not open_surface
 
 
-def build_snapshots(targets: List[Target], evidence_by_target: Optional[Dict[int, int]] = None,
-                    flags_by_target: Optional[Dict[int, int]] = None,
-                    valid_creds_by_ip: Optional[Dict[str, int]] = None) -> Dict[str, TargetSnapshot]:
+def build_snapshots(targets: list[Target], evidence_by_target: dict[int, int] | None = None,
+                    flags_by_target: dict[int, int] | None = None,
+                    valid_creds_by_ip: dict[str, int] | None = None) -> dict[str, TargetSnapshot]:
     """Builds per-target state snapshots from batched repository data."""
     evidence_by_target = evidence_by_target or {}
     flags_by_target = flags_by_target or {}
     valid_creds_by_ip = valid_creds_by_ip or {}
 
-    snaps: Dict[str, TargetSnapshot] = {}
+    snaps: dict[str, TargetSnapshot] = {}
     for t in targets:
         snap = TargetSnapshot(
             ip=t.ip,
@@ -243,7 +264,7 @@ def build_snapshots(targets: List[Target], evidence_by_target: Optional[Dict[int
     return snaps
 
 
-def unsprayed_hosts_for_credential(cred: Credential, targets: List[Target]) -> List[str]:
+def unsprayed_hosts_for_credential(cred: Credential, targets: list[Target]) -> list[str]:
     """In-scope hosts where this credential has never been attempted."""
     tested_hosts = {str(ip).split(":")[0] for ip in cred.tested_targets.keys()}
     return [
@@ -254,11 +275,11 @@ def unsprayed_hosts_for_credential(cred: Credential, targets: List[Target]) -> L
 
 
 def get_next_actions(
-    targets: List[Target],
-    credentials: Optional[List[Credential]] = None,
-    leads: Optional[List[Lead]] = None,
+    targets: list[Target],
+    credentials: list[Credential] | None = None,
+    leads: list[Lead] | None = None,
     limit: int = 10,
-) -> List[NextAction]:
+) -> list[NextAction]:
     """Derives the highest-value next investigations, deterministically ordered.
 
     Ordering: phase-0 gaps first, then confirmed-access opportunities (valid
@@ -267,7 +288,7 @@ def get_next_actions(
     """
     credentials = credentials or []
     leads = leads or []
-    actions: List[NextAction] = []
+    actions: list[NextAction] = []
 
     live_targets = _unique_by_ip(
         [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
@@ -415,7 +436,7 @@ def get_next_actions(
     # to the highest-priority occurrence (e.g. several admin-valid creds on
     # the same unowned host are one move, not N).
     seen: set = set()
-    deduped: List[NextAction] = []
+    deduped: list[NextAction] = []
     for act in sorted(actions, key=lambda a: (a.priority, a.title)):
         key = (act.kind, act.target_ip, act.port)
         if act.kind in ("exploit", "enum", "resume") and key in seen:
@@ -428,19 +449,19 @@ def get_next_actions(
 
 
 def get_top_action(
-    targets: List[Target],
-    credentials: Optional[List[Credential]] = None,
-    leads: Optional[List[Lead]] = None,
-) -> Optional[NextAction]:
+    targets: list[Target],
+    credentials: list[Credential] | None = None,
+    leads: list[Lead] | None = None,
+) -> NextAction | None:
     """Single highest-value action, for compact surfaces like the stats banner."""
     actions = get_next_actions(targets, credentials, leads, limit=1)
     return actions[0] if actions else None
 
 
 def detect_rabbit_holes(
-    targets: List[Target],
-    credentials: Optional[List[Credential]] = None,
-    leads: Optional[List[Lead]] = None,
+    targets: list[Target],
+    credentials: list[Credential] | None = None,
+    leads: list[Lead] | None = None,
 ) -> StuckReport:
     """Analyzes the workspace for rabbit-hole symptoms and escape routes.
 
@@ -505,3 +526,87 @@ def detect_rabbit_holes(
         )
 
     return report
+
+
+
+def evaluate_phase_progress(target, profile, repo) -> dict[str, PhaseProgress]:
+    progress = {}
+    phases = profile.get("phases", [])
+    
+    # Pre-populate phases
+    for p in phases:
+        progress[p["id"]] = PhaseProgress(phase_id=p["id"])
+    
+    # Gather evidence
+    evidence_rows = repo._conn.execute("SELECT title, proof_type FROM evidence WHERE target_id = ?", (target.id,)).fetchall()
+    proof_types = set()
+    for row in evidence_rows:
+        proof_types.add(row["proof_type"])
+        # Map evidence to phase (simplistic: user/root flag to privesc, others to enum/exploit)
+        if row["proof_type"] in ("user_flag", "root_flag") and "privesc" in progress:
+            progress["privesc"].evidence.append(row["title"])
+        elif "exploit" in progress:
+            progress["exploit"].evidence.append(row["title"])
+            
+    # Gather checklists
+    for svc in target.services:
+        for chk in svc.checklists:
+            cat = chk.category
+            if cat not in progress:
+                progress[cat] = PhaseProgress(phase_id=cat)
+            
+            p = progress[cat]
+            if chk.status == ChecklistStatus.CHECKED:
+                p.completed_checks.append(chk.title)
+            elif chk.status == ChecklistStatus.TODO:
+                p.pending_checks.append(chk.title)
+                p.recommended_actions.append(NextAction(
+                    priority=2, kind=cat, title=f"Run {chk.title}", rationale="Pending check", target_ip=target.ip
+                ))
+            elif chk.status == ChecklistStatus.RUNNING:
+                p.running_checks.append(chk.title)
+            elif chk.status == ChecklistStatus.DEAD_END:
+                p.dead_ends.append(chk.title)
+            elif chk.status == ChecklistStatus.FINDING:
+                p.findings.append(chk.title)
+                
+    # Evaluate Status
+    # Non-linear transitions (Privesc jump)
+    has_foothold = target.status in (TargetStatus.FOOTHOLD, TargetStatus.PWNED) or "user_flag" in proof_types or "root_flag" in proof_types
+    
+    for p in phases:
+        pid = p["id"]
+        phase_prog = progress[pid]
+        
+        # Check dependencies
+        deps = p.get("depends_on", [])
+        blocked = False
+        for d in deps:
+            if d in progress:
+                # If dependency is not completed and has work to do, it blocks us
+                if progress[d].phase_status != PhaseStatus.COMPLETED and (progress[d].pending_checks or progress[d].running_checks or progress[d].phase_status == PhaseStatus.IN_PROGRESS):
+                    blocked = True
+        
+        if pid == "privesc" and has_foothold:
+            blocked = False
+            if not phase_prog.pending_checks and not phase_prog.running_checks and not phase_prog.completed_checks and not phase_prog.findings and not phase_prog.evidence:
+                phase_prog.phase_status = PhaseStatus.NOT_STARTED
+            else:
+                phase_prog.phase_status = PhaseStatus.IN_PROGRESS
+            continue
+
+        if blocked:
+            phase_prog.phase_status = PhaseStatus.BLOCKED
+            continue
+            
+        if phase_prog.pending_checks or phase_prog.running_checks:
+            if phase_prog.completed_checks or phase_prog.running_checks or phase_prog.findings or phase_prog.dead_ends:
+                phase_prog.phase_status = PhaseStatus.IN_PROGRESS
+            else:
+                phase_prog.phase_status = PhaseStatus.NOT_STARTED
+        elif phase_prog.completed_checks or phase_prog.findings or phase_prog.dead_ends:
+            phase_prog.phase_status = PhaseStatus.COMPLETED
+        else:
+            phase_prog.phase_status = PhaseStatus.NOT_STARTED
+            
+    return progress

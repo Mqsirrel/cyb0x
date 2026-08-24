@@ -232,6 +232,8 @@ class SynapseTUI(App):
         Binding("e", "add_evidence", "Add Flag/Evidence", priority=False),
         Binding("space", "toggle_status", "Toggle Status", priority=False),
         Binding("x", "export_report", "Export Report", priority=False),
+        Binding("p", "select_profile", "Profile (P)", priority=False),
+        Binding("g", "guided_workflow", "Guide (G)", priority=False),
         Binding("T", "select_theme", "Themes (T)", priority=False),
         Binding("ctrl+t", "select_theme", "Themes", show=False),
         Binding("question_mark", "show_help", "Help (?)", priority=False),
@@ -258,6 +260,7 @@ class SynapseTUI(App):
         self.register_theme(CLAUDISH_LIGHT_THEME)
         self.register_theme(SYNAPSE_THEME)
         self.theme = "claudish"
+        self.active_profile = "network"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
         self.selected_target: Optional[Target] = None
@@ -392,7 +395,12 @@ class SynapseTUI(App):
             f" │ [bold {BACKGROUND} on {TERRACOTTA}] NEXT: {escape(top.title[:60])} [/]" if top else ""
         )
 
+        from synapse.tui.modals.profile_modal import PROFILES
+        profile_name = next((p["name"] for p in PROFILES if p["id"] == getattr(self, "active_profile", "network")), "Network Pentest")
+        phase_badge = "[Enum]" # Just hardcode Enum for now as active phase, or calculate it? Let's just put [Active Phase: Recon]
+        # Or let's just make it simple
         banner_text = (
+            f" [bold {TERRACOTTA}]{profile_name}[/] │ "
             f" ▸ [bold]Targets:[/] {stats['total_targets']}{scope_str} │ "
             f"[{SAGE}]Pwned: [bold]{stats['pwned_targets']}[/bold][/{SAGE}] │ "
             f"[{KRAFT}]Foothold: {stats['foothold_targets']}[/] │ "
@@ -1014,3 +1022,24 @@ class SynapseTUI(App):
         except Exception:
             pass
 
+
+    def action_select_profile(self) -> None:
+        """Open the profile selection modal."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        
+        from synapse.tui.modals.profile_modal import ProfileModal
+        def _apply_profile(chosen: Optional[str]) -> None:
+            if chosen:
+                self.active_profile = chosen
+                self.notify(f"Methodology profile switched", title="Profile Changed")
+                self.update_stats_banner()
+
+        self.push_screen(ProfileModal(active_profile=getattr(self, "active_profile", "network")), _apply_profile)
+
+    def action_guided_workflow(self) -> None:
+        """Open the guided methodology breakdown modal."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        from synapse.tui.modals.guided_phase_modal import GuidedPhaseModal
+        self.push_screen(GuidedPhaseModal(active_profile=getattr(self, "active_profile", "network"), stats=self.repo.get_stats()))

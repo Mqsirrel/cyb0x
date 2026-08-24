@@ -1,0 +1,37 @@
+id: "ejptv2"
+name: "eJPTv2 Methodology"
+description: "eLearnSecurity Junior Penetration Tester v2 methodology"
+version: "1.0"
+phases:
+  - id: "host_discovery"
+    name: "Host Discovery"
+    description: "Identify live hosts on the network"
+    order: 1
+  - id: "network_port_scan"
+    name: "Network/Port Scan"
+    description: "Identify open ports and services"
+    order: 2
+  - id: "service_enumeration"
+    name: "Service Enumeration"
+    description: "Enumerate identified services"
+    order: 3
+  - id: "web_smb_db_exploitation"
+    name: "Web/SMB/DB Exploitation"
+    description: "Exploit common services"
+    order: 4
+  - id: "foothold"
+    name: "Foothold"
+    description: "Gain initial access"
+    order: 5
+  - id: "local_privesc"
+    name: "Local PrivEsc"
+    description: "Escalate privileges on the system"
+    order: 6
+  - id: "pivoting_routing"
+    name: "Pivoting/Routing"
+    description: "Pivot to internal networks"
+    order: 7
+  - id: "proof_flag"
+    name: "Proof Flag"
+    description: "Capture the proof flag"
+    order: 8

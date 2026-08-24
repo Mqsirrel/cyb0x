@@ -61,6 +61,8 @@ class HelpModal(SynapseModal[None]):
 
         help_text.append("\nAssessment Workflow:\n", style=f"bold {KRAFT}")
         workflow_rows = [
+            ("p", "Switch active methodology profile"),
+            ("g", "Open Guided Workflow / Methodology phase breakdown"),
             ("n", "Open state-aware Triage: known vs unknown, and the highest-value next move"),
             ("s", "I'm Stuck: rabbit-hole analysis (dead ends vs untested surface vs un-sprayed creds)"),
             ("o", "Toggle in/out of scope for the selected target"),

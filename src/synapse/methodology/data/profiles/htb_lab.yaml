@@ -1,0 +1,26 @@
+id: "htb_lab"
+name: "HackTheBox Lab Methodology"
+description: "Methodology for HTB boxes"
+version: "1.0"
+phases:
+  - id: "port_scan"
+    name: "Port Scan"
+    order: 1
+  - id: "service_enum"
+    name: "Service Enum"
+    order: 2
+  - id: "web_service_fuzzing"
+    name: "Web/Service Fuzzing"
+    order: 3
+  - id: "foothold_user_flag"
+    name: "Foothold / User Flag"
+    order: 4
+  - id: "internal_enumeration_peas"
+    name: "Internal Enumeration / PEAS"
+    order: 5
+  - id: "privilege_escalation"
+    name: "Privilege Escalation"
+    order: 6
+  - id: "root_flag"
+    name: "Root Flag"
+    order: 7

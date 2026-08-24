@@ -122,6 +122,31 @@ class DatabaseRepository:
             self._conn.executescript(INDEXES_SQL)
             self._conn.commit()
 
+
+    # -------------------------------------------------------------------------
+    # Metadata Operations
+    # -------------------------------------------------------------------------
+    def get_metadata(self, key: str, default: str = "") -> str:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM metadata WHERE key = ?", (key,)).fetchone()
+            if row:
+                return row["value"]
+            # specific defaults logic
+            if key == "active_profile_id" and not default:
+                return "ejptv2"
+            return default
+
+    def set_metadata(self, key: str, value: str) -> bool:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO metadata (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value)
+            )
+            return True
+
     # -------------------------------------------------------------------------
     # Shared hydration helpers
     # -------------------------------------------------------------------------

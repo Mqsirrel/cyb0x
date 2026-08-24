@@ -9,18 +9,42 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from synapse.models import Service, Target
+from synapse.methodology.profile import ProfileLoader, MethodologyProfile
 
 
 class MethodologyEngine:
     """Matches network services against curated methodology rules and renders commands."""
 
-    def __init__(self, custom_rules_path: Optional[Path] = None):
+    def __init__(self, custom_rules_path: Optional[Path] = None, active_profile_id: Optional[str] = None):
         self.rules: Dict[str, Any] = {}
         self.initial_recon_rules: List[Dict[str, Any]] = []
         self._compiled_patterns: Dict[str, List[re.Pattern]] = {}
+        self.profile_loader = ProfileLoader()
+        self.active_profile: Optional[MethodologyProfile] = None
+        
         self._load_default_rules()
         if custom_rules_path and custom_rules_path.exists():
             self._load_custom_rules(custom_rules_path)
+            
+        if active_profile_id:
+            self.set_active_profile(active_profile_id)
+
+    def get_available_profiles(self) -> List[MethodologyProfile]:
+        """Returns a list of all loaded methodology profiles."""
+        return self.profile_loader.get_all_profiles()
+
+    def set_active_profile(self, profile_id: str) -> bool:
+        """Sets the active profile by ID. Returns True if successful."""
+        profile = self.profile_loader.get_profile(profile_id)
+        if profile:
+            self.active_profile = profile
+            return True
+        return False
+
+    def load_custom_profile(self, path: Path) -> bool:
+        """Loads a custom methodology profile from a YAML file."""
+        profile = self.profile_loader.load_custom_profile(path)
+        return bool(profile)
 
     def _rebuild_pattern_cache(self) -> None:
         """Precompiles name/banner regexes once so match_service avoids re-compilation."""
