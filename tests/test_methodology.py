@@ -1,5 +1,6 @@
 """Unit tests for methodology knowledge base and rule engine."""
 
+import shlex
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,53 @@ initial_recon:
     # Custom service rules still merge alongside the recon override
     svc = Service(target_id=1, port=9090, name="custom-api")
     assert engine.match_service(svc) == "my_service"
+
+
+def test_render_command_neutralizes_metacharacters_in_unquoted_position():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50", hostname="web01$(reboot)")
+    rendered = engine.render_command("scan {HOST}", target)
+    assert rendered == "scan 'web01$(reboot)'"
+
+
+def test_render_command_banner_domain_cannot_inject():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50")
+    svc = Service(
+        target_id=1, port=53, name="domain",
+        banner="(domain:corp.local; touch /tmp/pwned)",
+    )
+    rendered = engine.render_command("dig axfr @{IP} {DOMAIN}", target, svc)
+    tokens = shlex.split(rendered)
+    # The hostile domain must survive as ONE literal argument — no command split
+    assert len(tokens) == 4
+    assert tokens[0] == "dig" and tokens[1] == "axfr"
+    assert tokens[3] == "CORP.LOCAL; TOUCH /TMP/PWNED"
+
+
+def test_render_command_escapes_quote_inside_prequoted_template():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50")
+    rendered = engine.render_command(
+        "evil-winrm -i {IP} -u '{USER}' -p '{PASS}'", target, password="a'b"
+    )
+    assert rendered == "evil-winrm -i 10.10.11.50 -u 'admin' -p 'a'\\''b'"
+
+
+def test_render_command_benign_values_render_unchanged():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50", hostname="web01.corp.local")
+    rendered = engine.render_command("hydra -l {USER} -p {PASS} ssh://{IP}:{PORT}", target)
+    assert rendered == "hydra -l admin -p password ssh://10.10.11.50:{PORT}"
+
+
+def test_render_command_https_protocol_switch_and_proto_token():
+    engine = MethodologyEngine()
+    target = Target(ip="10.10.11.50")
+    ssl_svc = Service(target_id=1, port=443, name="http")
+    assert engine.render_command("whatweb {PROTO}://{IP}:{PORT}", target, ssl_svc) == (
+        "whatweb https://10.10.11.50:443"
+    )
+    assert engine.render_command("curl http://{IP}:{PORT}/x", target, ssl_svc) == (
+        "curl https://10.10.11.50:443/x"
+    )

@@ -236,3 +236,100 @@ def test_engine_is_deterministic():
     assert [(a.title, a.priority, a.target_ip, a.port) for a in first] == [
         (a.title, a.priority, a.target_ip, a.port) for a in second
     ]
+
+
+def test_multiple_admin_credentials_same_host_collapse_to_one_exploit():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5")
+    c1 = repo.add_credential("administrator", "pw1", target_id=t.id)
+    c2 = repo.add_credential("svc-admin", "pw2", target_id=t.id)
+    repo.record_credential_test(c1.id, "10.10.10.5", valid=True, admin=True)
+    repo.record_credential_test(c2.id, "10.10.10.5", valid=True, admin=True)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    exploits = [a for a in actions if a.kind == "exploit" and a.target_ip == "10.10.10.5"]
+    assert len(exploits) == 1, "several admin-valid creds on one host are one move"
+
+
+def test_foothold_status_suppresses_exploit_suggestion():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5", status=TargetStatus.FOOTHOLD)
+    cred = repo.add_credential("administrator", "pw", target_id=t.id)
+    repo.record_credential_test(cred.id, "10.10.10.5", valid=True, admin=True)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    assert not [a for a in actions if a.kind == "exploit"]
+
+
+def test_valid_non_admin_cred_does_not_suggest_exploit():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5")
+    svc = repo.add_or_update_service(t.id, 22, "tcp", "ssh")
+    repo.add_checklist_item(svc.id, title="banner check")
+    cred = repo.add_credential("lowpriv", "pw", target_id=t.id)
+    repo.record_credential_test(cred.id, "10.10.10.5", valid=True, admin=False)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    assert not [a for a in actions if a.kind == "exploit"]
+
+
+def test_spray_suppressed_once_every_live_host_tested():
+    repo = _seed_repo()
+    t1 = repo.add_or_get_target("10.10.10.5")
+    t2 = repo.add_or_get_target("10.10.10.6")
+    svc2 = repo.add_or_update_service(t2.id, 22, "tcp", "ssh")  # keep .6 non-bare
+    repo.add_checklist_item(svc2.id, title="check")
+    cred = repo.add_credential("svc", "pw", target_id=t1.id)
+    repo.record_credential_test(cred.id, "10.10.10.5", valid=True)
+    repo.record_credential_test(cred.id, "10.10.10.6", valid=True)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    assert not [a for a in actions if a.kind == "spray"]
+
+
+def test_todo_checks_surface_resume_when_no_untested_services_left():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5")
+    svc = repo.add_or_update_service(t.id, 80, "tcp", "http", status=ServiceStatus.ENUMERATED)
+    done = repo.add_checklist_item(svc.id, title="headers")
+    todo = repo.add_checklist_item(svc.id, title="dirb sweep")
+    repo.update_checklist_status(done.id, ChecklistStatus.CHECKED)
+
+    actions = get_next_actions(repo.list_targets())
+    resumes = [a for a in actions if a.kind == "resume"]
+    assert resumes and "remaining check(s)" in resumes[0].title
+    assert not [a for a in actions if a.kind == "enum"]
+
+
+def test_running_check_defers_todo_resume_to_interrupted_work():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5")
+    svc = repo.add_or_update_service(t.id, 80, "tcp", "http")
+    running = repo.add_checklist_item(svc.id, title="nikto long scan")
+    todo = repo.add_checklist_item(svc.id, title="dirb sweep")
+    repo.update_checklist_status(running.id, ChecklistStatus.RUNNING)
+
+    actions = get_next_actions(repo.list_targets())
+    resume_titles = [a.title for a in actions if a.kind == "resume"]
+    assert any("Resume" in t_ for t_ in resume_titles)
+    assert not any("Work through" in t_ for t_ in resume_titles), (
+        "TODO backlog must not compete with an interrupted RUNNING check"
+    )
+
+
+def test_dead_end_services_excluded_from_enum_pending():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.10.5")
+    dead = repo.add_or_update_service(t.id, 3306, "tcp", "mysql", status=ServiceStatus.DEAD_END)
+    repo.add_checklist_item(dead.id, title="default creds", status=ChecklistStatus.DEAD_END)
+
+    actions = get_next_actions(repo.list_targets())
+    assert not [a for a in actions if a.kind == "enum"], "dead-ended port must not resurface as pending"
+
+
+def test_action_limit_truncates_output():
+    repo = _seed_repo()
+    for i in range(6):
+        repo.add_or_get_target(f"10.10.10.{i + 1}")
+    actions = get_next_actions(repo.list_targets(), limit=2)
+    assert len(actions) == 2

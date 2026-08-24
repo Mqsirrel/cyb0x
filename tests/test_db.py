@@ -194,3 +194,35 @@ def test_credential_lifecycle_reset(repo: DatabaseRepository):
     final = repo.get_credential_by_id(cred.id)
     assert "10.10.11.70" not in final.tested_targets
     assert "10.10.11.71" in final.tested_targets
+
+
+def test_refresh_service_state_derives_status_from_checklists(repo: DatabaseRepository):
+    t = repo.add_or_get_target("10.10.11.80")
+    svc = repo.add_or_update_service(t.id, 21, "tcp", "ftp")
+    c1 = repo.add_checklist_item(svc.id, title="anon ftp")
+    c2 = repo.add_checklist_item(svc.id, title="version hunt")
+
+    # No checklists touched yet -> status untouched
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.UNTESTED
+
+    repo.update_checklist_status(c1.id, ChecklistStatus.RUNNING)
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.IN_PROGRESS
+
+    repo.update_checklist_status(c2.id, ChecklistStatus.FINDING)
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.VULNERABLE
+
+    repo.update_checklist_status(c1.id, ChecklistStatus.CHECKED)
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.VULNERABLE
+
+    repo.update_checklist_status(c2.id, ChecklistStatus.DEAD_END)
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.ENUMERATED
+
+    repo.update_checklist_status(c1.id, ChecklistStatus.DEAD_END)
+    assert repo.refresh_service_state(svc.id).status == ServiceStatus.DEAD_END
+
+    # Persisted, not just returned
+    assert repo.get_service_by_id(svc.id).status == ServiceStatus.DEAD_END
+
+
+def test_refresh_service_state_unknown_id_returns_none(repo: DatabaseRepository):
+    assert repo.refresh_service_state(99999) is None

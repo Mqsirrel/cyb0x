@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from synapse.ai.advisor import AIAdvisor
+from synapse.assessment import build_snapshots, get_next_actions
 from synapse.db.repository import DatabaseRepository
 from synapse.export.json_exporter import export_workspace_json, import_workspace_json
 from synapse.export.markdown_exporter import export_markdown_report, export_obsidian_vault
@@ -20,10 +20,6 @@ from synapse.methodology.engine import MethodologyEngine
 from synapse.models import (
     ChecklistStatus,
     CredentialType,
-    LeadPriority,
-    LeadStatus,
-    ProofType,
-    ServiceStatus,
     TargetStatus,
 )
 from synapse.parsers.masscan_parser import parse_masscan_json
@@ -466,9 +462,8 @@ def list_creds(ctx: click.Context, show_secrets: bool) -> None:
 @click.argument("ip", required=False, default=None)
 @click.pass_context
 def suggest_next_steps(ctx: click.Context, ip: Optional[str]) -> None:
-    """Triage attack surface and suggest next attack steps."""
+    """Triage attack surface and suggest next attack steps (deterministic engine)."""
     repo: DatabaseRepository = ctx.obj["repo"]
-    advisor = AIAdvisor()
 
     if ip:
         target = repo.get_target_by_ip(ip)
@@ -483,27 +478,57 @@ def suggest_next_steps(ctx: click.Context, ip: Optional[str]) -> None:
         console.print("[dim]No targets in workspace.[/dim]")
         return
 
-    for t in targets:
-        suggestions = advisor.analyze_target_attack_surface(t)
-        panel_content = f"[bold white]Target:[/bold white] {t.ip} ({t.os})\n"
-        panel_content += f"[bold white]Status:[/bold white] {t.status.value.upper()}\n\n"
-        panel_content += "[bold cyan]Recommended High-Value Actions:[/bold cyan]\n"
-        for s in suggestions:
-            pri = s.get("priority", LeadPriority.MEDIUM)
-            pri_val = pri.value.upper() if hasattr(pri, "value") else str(pri).upper()
-            pri_color = "red" if pri_val == "CRITICAL" else ("yellow" if pri_val == "HIGH" else "green")
-            panel_content += f"  • [{pri_color}][{pri_val}][/{pri_color}] [bold]{s['title']}[/bold]\n"
-            panel_content += f"    Rationale: {s.get('rationale', '-')}\n"
-            if s.get("suggested_command"):
-                panel_content += f"    Recipe: [green]{s['suggested_command']}[/green]\n"
+    credentials = repo.list_credentials()
+    leads = repo.list_leads()
+    snapshots = build_snapshots(targets)
+    actions = get_next_actions(targets, credentials, leads)
 
-        console.print(
-            Panel(
-                panel_content,
-                title=f"Methodology Copilot: {t.ip}",
-                border_style="cyan",
+    def state_lines(snap) -> list[str]:
+        lines = [
+            f"[bold white]Status:[/bold white] {snap.status.value.upper()}"
+            + ("" if snap.in_scope else " [bold red](OUT-OF-SCOPE)[/bold red]"),
+            f"[bold white]Services:[/bold white] {snap.services_total} "
+            f"(untested {snap.services_untested}, vulnerable {snap.services_vulnerable}, dead-end {snap.services_dead_end})",
+        ]
+        if snap.checks_total:
+            lines.append(
+                f"[bold white]Checks:[/bold white] {snap.checks_done + snap.checks_finding}/{snap.checks_total} "
+                f"resolved — coverage {snap.coverage:.0%}"
             )
-        )
+        else:
+            lines.append("[bold white]Checks:[/bold white] none — attack surface not mapped yet")
+        extras = []
+        if snap.valid_creds:
+            extras.append(f"{snap.valid_creds} valid cred(s)")
+        if snap.flag_count:
+            extras.append(f"{snap.flag_count} flag(s)")
+        if extras:
+            lines.append("[bold white]Access:[/bold white] " + ", ".join(extras))
+        return lines
+
+    for t in targets:
+        snap = snapshots[t.ip]
+        target_actions = [a for a in actions if a.target_ip == t.ip]
+        panel_content = "\n".join(state_lines(snap)) + "\n\n"
+        panel_content += "[bold cyan]Recommended High-Value Actions:[/bold cyan]\n"
+        if target_actions:
+            for a in target_actions:
+                chip = a.priority_label
+                pri_color = "red" if a.priority <= 1 else ("yellow" if a.priority <= 3 else "green")
+                panel_content += f"  • [{pri_color}][{chip}][/{pri_color}] [bold]{a.title}[/bold]\n"
+                panel_content += f"    Why: {a.rationale}\n"
+        else:
+            panel_content += "  [dim]Nothing open for this host — resolved, pwned, or out of scope.[/dim]\n"
+
+        console.print(Panel(panel_content, title=f"Methodology Copilot: {t.ip}", border_style="cyan"))
+
+    workspace_actions = [a for a in actions if a.target_ip is None]
+    if workspace_actions and len(targets) > 0:
+        content = "[bold cyan]Workspace-Wide Moves:[/bold cyan]\n"
+        for a in workspace_actions:
+            content += f"  • [yellow][{a.priority_label}][/yellow] [bold]{a.title}[/bold]\n"
+            content += f"    Why: {a.rationale}\n"
+        console.print(Panel(content, title="Lateral Movement & Housekeeping", border_style="magenta"))
 
 
 @main.command(name="import-backup")

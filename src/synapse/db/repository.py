@@ -382,6 +382,37 @@ class DatabaseRepository:
             )
             return cur.rowcount > 0
 
+    def refresh_service_state(self, service_id: int) -> Optional[Service]:
+        """Derives and persists service status from its checklist state machine.
+
+        Single source of truth for the transition rules: finding -> VULNERABLE,
+        running -> IN_PROGRESS, all dead-end -> DEAD_END, fully resolved ->
+        ENUMERATED. Callers may pass stale references; state is re-read here.
+        """
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM services WHERE id = ?", (service_id,)).fetchone()
+            if not row:
+                return None
+            service = self._row_to_service(row)
+            self._attach_checklists({service.id: service}, self._conn)  # type: ignore
+
+        if not service.checklists:
+            return service
+        statuses = {c.status for c in service.checklists}
+        if ChecklistStatus.FINDING in statuses:
+            new_status = ServiceStatus.VULNERABLE
+        elif ChecklistStatus.RUNNING in statuses:
+            new_status = ServiceStatus.IN_PROGRESS
+        elif statuses <= {ChecklistStatus.DEAD_END}:
+            new_status = ServiceStatus.DEAD_END
+        elif statuses <= {ChecklistStatus.CHECKED, ChecklistStatus.FINDING, ChecklistStatus.DEAD_END}:
+            new_status = ServiceStatus.ENUMERATED
+        else:
+            return service
+        self.update_service_status(service.id, new_status)  # type: ignore
+        service.status = new_status
+        return service
+
     # -------------------------------------------------------------------------
     # Checklist Operations
     # -------------------------------------------------------------------------

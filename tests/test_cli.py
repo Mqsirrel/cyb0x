@@ -90,3 +90,30 @@ def test_cli_ingest_and_export(tmp_path: Path):
     res_imp = runner.invoke(main, ["--db", new_db, "import-backup", str(out_json)])
     assert res_imp.exit_code == 0
     assert "Workspace Restored Successfully" in res_imp.output
+
+
+def test_cli_next_uses_deterministic_engine_and_respects_scope(tmp_path: Path):
+    runner = CliRunner()
+    db_file = str(tmp_path / "next_test.db")
+
+    res = runner.invoke(main, ["--db", db_file, "add-target", "10.10.11.150"])
+    assert res.exit_code == 0
+
+    # Bare target -> deterministic recon recommendation surfaces
+    res_next = runner.invoke(main, ["--db", db_file, "next", "10.10.11.150"])
+    assert res_next.exit_code == 0
+    assert "Methodology Copilot" in res_next.output
+    assert "initial reconnaissance" in res_next.output
+
+    # Out-of-scope host must get zero recommendations (scope bypass guard)
+    from synapse.db.repository import DatabaseRepository
+    repo = DatabaseRepository(db_file)
+    t = repo.get_target_by_ip("10.10.11.150")
+    repo.set_target_scope(t.id, False)
+    repo.close()
+
+    res_oos = runner.invoke(main, ["--db", db_file, "next", "10.10.11.150"])
+    assert res_oos.exit_code == 0
+    assert "OUT-OF-SCOPE" in res_oos.output
+    assert "initial reconnaissance" not in res_oos.output
+    assert "Nothing open for this host" in res_oos.output

@@ -8,7 +8,7 @@ This document specifies the technical architecture, invariants, subsystem bounda
 
 1. **100% Offline-First & Deterministic:**
    - Synapse must function completely without internet access, external databases, or mandatory LLM APIs.
-   - Any AI features (`src/synapse/ai/`) are strictly optional advisory layers with instant deterministic heuristic fallbacks.
+   - All recommendations come from the deterministic engine (`src/synapse/assessment/`) — it is the single source of decision logic for the TUI triage board, stats banner, and CLI `next`. Any AI features (`src/synapse/ai/`) are strictly optional advisory hooks requiring an explicit API key; they never replace or shadow deterministic recommendations.
 2. **ACID State Machine:**
    - All state is persisted in an indexed SQLite database with Write-Ahead Logging (`WAL` mode), busy timeout protection, and cascading foreign keys.
    - Database operations must be transactional, idempotent, and resilient against unexpected process termination.
@@ -69,14 +69,14 @@ Defines the core entities using Pydantic:
 
 ### 3.4 Methodology Engine (`src/synapse/methodology/`)
 - `data/services.yaml`: Comprehensive knowledge base covering 50+ network services, plus a top-level `initial_recon:` section of host-level phase-0 recipes (applied to targets before any service is discovered; only host-scoped variables like `{IP}` / `{HOST}` are valid).
-- `engine.py`: Matches discovered services against port lists and regex patterns (`name_patterns`), rendering ready-to-run recipes by substituting `{IP}`, `{PORT}`, `{HOST}`, `{USER}`, `{PASS}`, `{DOMAIN}`. Also exposes `get_initial_recon_commands(target)` for service-less targets, and supports rendering without a service context (service-scoped tokens such as `{PORT}` remain unsubstituted).
+- `engine.py`: Matches discovered services against port lists and regex patterns (`name_patterns`), rendering ready-to-run recipes by substituting `{IP}`, `{PORT}`, `{HOST}`, `{USER}`, `{PASS}`, `{DOMAIN}`. Substituted values are shell-quoted at the trust boundary (scan/banner data is untrusted), so hostile banners or harvested credentials can never inject commands. Also exposes `get_initial_recon_commands(target)` for service-less targets, and supports rendering without a service context (service-scoped tokens such as `{PORT}` remain unsubstituted).
 - **Initial Recon loop (TUI, key `i`):** recon recipes execute through the standard Runner modal; if the captured stdout parses as Nmap text, discovered services are attached via the normal `add_or_update_service` + checklist pipeline — no separate persistence model exists for phase-0 items (evidence ledger records the run instead).
 - **Seamless fallback (TUI, key `r`):** running a recipe with no service selected auto-routes to the Initial Recon flow, so fresh targets flow Target → recon → discovered services → methodology without dead ends.
 
 ### 3.5 Assessment Engine (`src/synapse/assessment/`)
 Pure deterministic analysis over repository models — no SQL, no network, no LLM.
 - `build_snapshots(targets)`: per-host `TargetSnapshot` aggregating known vs unknown vs tested state (services by status, checks by status, coverage ratio, valid creds, flags).
-- `get_next_actions(...)`: prioritized investigations with rationale. Ordering: phase-0 gaps → confirmed-admin exploitation → untested enumeration surface → credential sprays → interrupted work → stale-lead housekeeping. Deterministically deduplicated and sorted; out-of-scope and ignored targets are excluded.
+- `get_next_actions(...)`: prioritized investigations with rationale. Ordering: phase-0 gaps → confirmed-admin exploitation → untested enumeration surface → credential sprays → interrupted work → stale-lead housekeeping. Deterministically deduplicated and sorted; out-of-scope and ignored targets are excluded. Consumed by the TUI triage board, the live `NEXT:` stats-banner hint, and the CLI `synapse next` command.
 - `detect_rabbit_holes(...)`: `StuckReport` separating proven dead ends from untouched surface and un-sprayed credentials; `is_stuck` is the rabbit-hole signature (dead ends exist AND no open avenue remains in scope). Powers the TUI "I'm stuck" modal (key `s`); triage board on key `n`; live `NEXT:` hint in the stats banner consumes `get_top_action`.
 
 ### 3.6 Runner & Proof Extraction (`src/synapse/runner/`)

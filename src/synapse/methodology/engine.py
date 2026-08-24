@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
@@ -169,9 +170,24 @@ class MethodologyEngine:
         if is_ssl and "http://{IP}:{PORT}" in rendered:
             rendered = rendered.replace("http://{IP}:{PORT}", "https://{IP}:{PORT}")
 
+        # Values originate from scan data (banners, hostnames, harvested creds) —
+        # an untrusted trust boundary. Quote them so shell metacharacters can
+        # never break out of the command executed via create_subprocess_shell.
+        def quote_value(value: str, prev_char: str) -> str:
+            if not value:
+                return ""
+            if prev_char == "'":
+                return value.replace("'", "'\\''")
+            if prev_char == '"':
+                return re.sub(r'(["$`\\])', r"\\\1", value)
+            return shlex.quote(value)
+
         def replace_token(match: re.Match) -> str:
             token = match.group(1)
-            return replacements.get(token, match.group(0))
+            if token not in replacements:
+                return match.group(0)
+            prev_char = rendered[match.start() - 1] if match.start() > 0 else ""
+            return quote_value(str(replacements[token]), prev_char)
 
         return re.sub(r"\{(\w+)\}", replace_token, rendered)
 
