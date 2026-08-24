@@ -297,7 +297,7 @@ def test_todo_checks_surface_resume_when_no_untested_services_left():
     t = repo.add_or_get_target("10.10.10.5")
     svc = repo.add_or_update_service(t.id, 80, "tcp", "http", status=ServiceStatus.ENUMERATED)
     done = repo.add_checklist_item(svc.id, title="headers")
-    todo = repo.add_checklist_item(svc.id, title="dirb sweep")
+    repo.add_checklist_item(svc.id, title="dirb sweep")
     repo.update_checklist_status(done.id, ChecklistStatus.CHECKED)
 
     actions = get_next_actions(repo.list_targets())
@@ -311,7 +311,7 @@ def test_running_check_defers_todo_resume_to_interrupted_work():
     t = repo.add_or_get_target("10.10.10.5")
     svc = repo.add_or_update_service(t.id, 80, "tcp", "http")
     running = repo.add_checklist_item(svc.id, title="nikto long scan")
-    todo = repo.add_checklist_item(svc.id, title="dirb sweep")
+    repo.add_checklist_item(svc.id, title="dirb sweep")
     repo.update_checklist_status(running.id, ChecklistStatus.RUNNING)
 
     actions = get_next_actions(repo.list_targets())
@@ -799,3 +799,55 @@ def test_adversary9_partial_exploitation_retires_owned_host_only():
     assert any(
         a.kind == "resume" and a.target_ip == "10.10.28.1" for a in actions
     ), "interrupted post-exploit work still resumable"
+
+
+# ---------------------------------------------------------------------------
+# Lab-validated regressions (kind-lavoisier synthetic pentest lab walkthrough)
+# ---------------------------------------------------------------------------
+
+def test_lab_foothold_host_with_no_open_work_nudges_privesc():
+    """Regression: a FOOTHOLD host with every check resolved produced ZERO
+    recommendations — silence exactly when privesc is the main line."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("127.0.0.1", hostname="lavoisier.local", status=TargetStatus.FOOTHOLD)
+    svc = repo.add_or_update_service(t.id, 22, "tcp", "ssh")
+    done = repo.add_checklist_item(svc.id, title="ssh login with harvested creds")
+    repo.update_checklist_status(done.id, ChecklistStatus.CHECKED)
+    repo.refresh_service_state(svc.id)
+
+    actions = get_next_actions(repo.list_targets())
+    nudges = [a for a in actions if a.kind == "privesc"]
+    assert nudges, "foothold with no open work must suggest privilege escalation"
+    assert nudges[0].priority == PRIORITY_EXPLOIT
+    assert nudges[0].target_ip == "127.0.0.1"
+
+    # Open work (pending check / finding / running) keeps the existing drivers
+    # in charge — the nudge must not duplicate them.
+    repo.update_checklist_status(done.id, ChecklistStatus.RUNNING)
+    actions2 = get_next_actions(repo.list_targets())
+    assert not [a for a in actions2 if a.kind == "privesc"]
+
+    # Reaching PWNED retires the nudge: nothing left to escalate.
+    repo.update_checklist_status(done.id, ChecklistStatus.CHECKED)
+    repo.update_target_status(t.id, TargetStatus.PWNED)
+    assert not [a for a in get_next_actions(repo.list_targets()) if a.kind == "privesc"]
+
+
+def test_lab_completed_scope_is_not_a_rabbit_hole():
+    """Regression: a fully-pwned scope with accumulated dead ends reported
+    is_stuck=True — completion was misread as being trapped."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("127.0.0.1", status=TargetStatus.PWNED)
+    ftp = repo.add_or_update_service(t.id, 21, "tcp", "ftp", status=ServiceStatus.DEAD_END)
+    repo.add_checklist_item(ftp.id, title="anon ftp", status=ChecklistStatus.DEAD_END)
+
+    report = detect_rabbit_holes(repo.list_targets())
+    assert report.dead_end_services, "dead-end evidence still recorded"
+    assert not report.is_stuck, "all targets pwned: silence is completion, not a trap"
+
+    # One live sibling target keeps the stuck verdict honest for it.
+    other = repo.add_or_get_target("127.0.0.2")
+    osvc = repo.add_or_update_service(other.id, 3306, "tcp", "mysql", status=ServiceStatus.DEAD_END)
+    repo.add_checklist_item(osvc.id, title="default creds", status=ChecklistStatus.DEAD_END)
+    report2 = detect_rabbit_holes(repo.list_targets())
+    assert report2.is_stuck

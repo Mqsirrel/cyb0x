@@ -221,14 +221,18 @@ class StuckReport:
     unsprayed_credentials: list[str] = field(default_factory=list)
     stale_leads: list[str] = field(default_factory=list)
     suggestions: list[NextAction] = field(default_factory=list)
+    assessment_complete: bool = False
 
     @property
     def is_stuck(self) -> bool:
         """Stuck means: activity exists but nothing actionable is left open.
 
         Housekeeping hints (kind == "cleanup", e.g. the out-of-scope reminder)
-        are not attack surface and must not mask a genuine stuck verdict.
+        are not attack surface and must not mask a genuine stuck verdict, and a
+        fully-owned scope is completion — silence there is success, not a trap.
         """
+        if self.assessment_complete:
+            return False
         has_activity = bool(self.dead_end_services or self.dead_end_checks)
         open_surface = (
             self.untested_ports
@@ -307,8 +311,9 @@ def get_next_actions(
     """Derives the highest-value next investigations, deterministically ordered.
 
     Ordering: phase-0 gaps first, then confirmed-access opportunities (valid
-    admin creds), then untested enumeration surface, then sprays, resumptions,
-    and housekeeping. Out-of-scope and ignored targets are excluded.
+    admin creds, confirmed findings, owned-but-not-rooted privesc work), then
+    untested enumeration surface, then sprays, resumptions, and housekeeping.
+    Out-of-scope and ignored targets are excluded.
     """
     credentials = credentials or []
     leads = leads or []
@@ -374,6 +379,28 @@ def get_next_actions(
                     port=s.port,
                 )
             )
+
+    # 2.7 Owned-but-not-rooted hosts with no open work: the main line is now
+    # local privilege escalation. Without this nudge the triage board goes
+    # silent at the exact moment the tester most needs direction (post-exploit).
+    # Findings are deliberately NOT counted as open here: section 2.5 already
+    # retires finding-nags once a host is owned, so counting them would keep
+    # the host silent forever.
+    for t in live_targets:
+        if t.status != TargetStatus.FOOTHOLD:
+            continue
+        snap = snapshots[t.ip]
+        if snap.checks_todo or snap.checks_running:
+            continue  # pending surface / interrupted work already drive actions below
+        actions.append(
+            NextAction(
+                priority=PRIORITY_EXPLOIT,
+                kind="privesc",
+                title=f"Enumerate privilege-escalation vectors on {snap.label}",
+                rationale="Host at foothold but root not confirmed — hunt sudo rules, SUID binaries, and harvested credential reuse.",
+                target_ip=t.ip,
+            )
+        )
 
     # 3. Untested services with pending methodology checks.
     for t in live_targets:
@@ -463,7 +490,7 @@ def get_next_actions(
     deduped: list[NextAction] = []
     for act in sorted(actions, key=lambda a: (a.priority, a.title)):
         key = (act.kind, act.target_ip, act.port)
-        if act.kind in ("exploit", "enum", "resume") and key in seen:
+        if act.kind in ("exploit", "enum", "resume", "privesc") and key in seen:
             continue
         seen.add(key)
         deduped.append(act)
@@ -501,6 +528,9 @@ def detect_rabbit_holes(
         [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
     )
     oos_count = len(targets) - len(live_targets)
+    report.assessment_complete = bool(live_targets) and all(
+        t.status == TargetStatus.PWNED for t in live_targets
+    )
 
     for t in live_targets:
         for svc in t.services:
@@ -537,7 +567,9 @@ def detect_rabbit_holes(
     # that counteract the stuck feeling. Resume counts: finishing interrupted
     # work is exactly how you climb out of a rabbit hole.
     escapes = get_next_actions(targets, credentials, leads, limit=8)
-    report.suggestions = [a for a in escapes if a.kind in ("recon", "enum", "spray", "exploit", "resume")]
+    report.suggestions = [
+        a for a in escapes if a.kind in ("recon", "enum", "spray", "exploit", "privesc", "resume")
+    ]
 
     if oos_count:
         report.suggestions.append(
@@ -705,6 +737,12 @@ def evaluate_phase_progress(
                 return False
         return True
 
+    # A pristine engagement (no methodology surface routed anywhere yet) must
+    # not present evidence-gated phases as active work: "capture user.txt"
+    # before recon has even run inverts the workflow. The gate only becomes
+    # live once some checklist surface exists.
+    any_routed_surface = any(prog.total_checks for prog in progress.values())
+
     for p in phases:
         prog = progress[p.id]
 
@@ -732,6 +770,10 @@ def evaluate_phase_progress(
             t for t in (p.evidence_required or []) if not evidence_by_type.get(t)
         ]
         if missing_evidence:
+            if not any_routed_surface:
+                prog.phase_status = PhaseStatus.NOT_STARTED
+                prog.blocked_reason = None
+                continue
             prog.phase_status = PhaseStatus.IN_PROGRESS
             prog.blocked_reason = None
             prog.recommended_actions.append(

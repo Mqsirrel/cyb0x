@@ -1,0 +1,10 @@
+# Lavoisier target - sshd
+Port 22
+ListenAddress 0.0.0.0
+PermitRootLogin no
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+EmptyPasswdLogin no
+AllowUsers developer
+Subsystem sftp internal-sftp

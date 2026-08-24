@@ -1,0 +1,28 @@
+name: lavoisier-lab
+
+services:
+  target:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lavoisier-target
+    hostname: lavoisier.local
+    restart: no
+    ports:
+      # Bound to loopback only: the lab is reachable from the tester's machine,
+      # not from other hosts on the LAN.
+      - "127.0.0.1:2121:21"     # ftp    (anonymous drop - intentional dead end)
+      - "127.0.0.1:2222:22"     # ssh    (foothold via harvested credentials)
+      - "127.0.0.1:8080:8080"   # http   (enumeration target / backup leak)
+      - "127.0.0.1:31337:31337" # vault-sync (custom decoy - dead end)
+    networks:
+      labnet:
+        ipv4_address: 172.29.0.10
+
+networks:
+  labnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+          gateway: 172.29.0.1

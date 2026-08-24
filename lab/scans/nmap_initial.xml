@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<nmaprun scanner="nmap" args="nmap -Pn -sV -p 2121,2222,8080,31337 -oX nmap_initial.xml 172.29.0.10" start="1730000000" startstr="Mon Jan 01 00:00:00 2024" version="7.94" xmloutputversion="1.05">
+<hosthint><host ip="172.29.0.10"/><status state="up"/></hosthint>
+<host starttime="1730000000"><status state="up" reason="user-set" reason_ttl="0"/>
+<address addr="172.29.0.10" addrtype="ipv4"/>
+<hostnames><hostname name="lavoisier.local" type="PTR"/></hostnames>
+<ports>
+<port protocol="tcp" portid="2121"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ftp" product="vsftpd" version="3.0.3" method="probed" conf="10"><cpe>cpe:/a:vsftpd:vsftpd:3.0.3</cpe></service></port>
+<port protocol="tcp" portid="2222"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="ssh" product="OpenSSH" version="9.6" extrainfo="protocol 2.0" tunnel="ssl" method="probed" conf="10"><cpe>cpe:/a:openbsd:openssh</cpe></service></port>
+<port protocol="tcp" portid="8080"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="http" product="nginx" version="1.24.0" method="probed" conf="10"><cpe>cpe:/a:igor_sysoev:nginx</cpe></service></port>
+<port protocol="tcp" portid="31337"><state state="open" reason="syn-ack" reason_ttl="64"/><service name="unknown" product="LAVOISIER VAULT-SYNC" version="0.9" servicefp="SF-Port31337-TCP:banner=VAULT-SYNC" method="table" conf="3"/></port>
+</ports>
+<times srtt="200" rttvar="50" to="100000"/>
+</host>
+<runstats><finished time="1730000060" timestr="Mon Jan 01 00:01:00 2024" elapsed="60.00" summary="Nmap done" exit="success"/><hosts up="1" down="0" total="1"/></runstats>
+</nmaprun>

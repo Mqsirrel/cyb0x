@@ -1,0 +1,7 @@
+Internal memo 2024-11-02
+========================
+The FTP drop is decommissioned. All archive jobs now go through VAULT-SYNC.
+
+Reminder: the old site-backup cron job on the portal box was never removed.
+If it is still publishing to /backups/, tell archive-admin so he can finally
+fix the permissions.

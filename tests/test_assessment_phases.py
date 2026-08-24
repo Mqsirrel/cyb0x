@@ -1,6 +1,5 @@
-import pytest
 from synapse.models import TargetStatus, ChecklistStatus, ProofType
-from synapse.assessment.engine import evaluate_phase_progress, PhaseProgress, PhaseStatus, NextAction
+from synapse.assessment.engine import evaluate_phase_progress, PhaseStatus
 from synapse.methodology.profile import MethodologyProfile, PhaseDefinition, PrerequisiteCondition
 from synapse.db.repository import DatabaseRepository
 
@@ -89,3 +88,36 @@ def test_blocked_phase():
     progress = evaluate_phase_progress(target, profile, [])
     assert progress["recon"].phase_status == PhaseStatus.NOT_STARTED
     assert progress["enum"].phase_status == PhaseStatus.BLOCKED
+
+
+def test_pristine_target_does_not_nag_for_proof_flags():
+    """Lab regression: on a bare pre-recon target the first evidence-gated
+    phase reported IN_PROGRESS ('capture root_flag') before any methodology
+    surface existed — the workflow ran backwards."""
+    repo = DatabaseRepository(":memory:")
+    target = repo.add_or_get_target("127.0.0.1", hostname="lavoisier.local")
+    progress = evaluate_phase_progress(target, build_profile_with_flags(), repo.list_evidence(target.id))
+    assert progress["proof"].phase_status == PhaseStatus.NOT_STARTED
+    assert not progress["proof"].recommended_actions
+
+    # Once real surface exists the evidence gate becomes live again.
+    svc = repo.add_or_update_service(target.id, 80)
+    repo.add_checklist_item(svc.id, "dirb sweep", category="enum", status=ChecklistStatus.CHECKED)
+    target = repo.get_target_by_id(target.id)
+    progress2 = evaluate_phase_progress(target, build_profile_with_flags(), repo.list_evidence(target.id))
+    assert progress2["proof"].phase_status == PhaseStatus.IN_PROGRESS
+    assert any("root_flag" in a.title for a in progress2["proof"].recommended_actions)
+
+
+def build_profile_with_flags():
+    """Same spine as build_profile plus an evidence-gated tail phase."""
+    base = build_profile()
+    base.phases.append(
+        PhaseDefinition(
+            id="proof", name="Proof Flag", order=5,
+            depends_on=["privesc"],
+            prerequisites=[PrerequisiteCondition(condition_type="evidence_type", value="root_flag")],
+            evidence_required=["root_flag"],
+        )
+    )
+    return base

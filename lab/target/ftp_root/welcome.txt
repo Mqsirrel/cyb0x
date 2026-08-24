@@ -1,0 +1,4 @@
+Lavoisier Archive - anonymous FTP drop.
+
+This share is retired. Backups were moved to the internal vault
+(VAULT-SYNC, tcp/31337). Nothing of value is stored here anymore.
