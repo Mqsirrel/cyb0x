@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from typing import List
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.containers import VerticalScroll
+from textual.widgets import Static
+
+from synapse.tui.modals.base import ModalButton, SynapseModal
+from synapse.tui.theme import KRAFT, MUTED, TERRACOTTA
 
 
-class HelpModal(ModalScreen[None]):
+class HelpModal(SynapseModal[None]):
     """Dialog displaying interactive keyboard shortcuts and operational guide."""
 
     BINDINGS = [
@@ -18,23 +22,18 @@ class HelpModal(ModalScreen[None]):
         Binding("q", "cancel", "Close"),
     ]
 
+    GLYPH = "▸"
+    TITLE = "HELP — Keyboard Shortcuts & Operator Guide"
+
     DEFAULT_CSS = """
-    HelpModal {
-        align: center middle;
-    }
-    #dialog {
-        padding: 1 2;
-        width: 75;
+    HelpModal #dialog {
+        width: 84;
         height: auto;
-        border: thick $primary;
-        background: $surface;
+        max-height: 88%;
     }
-    #help-content {
-        margin-top: 1;
-        margin-bottom: 1;
-    }
-    Button {
-        align: center middle;
+    #help-scroll {
+        height: auto;
+        max-height: 100%;
         margin-top: 1;
     }
     """
@@ -48,7 +47,7 @@ class HelpModal(ModalScreen[None]):
         key/description column alignment.
         """
         help_text = Text()
-        help_text.append("Navigation & Tab Switching:\n", style="bold yellow")
+        help_text.append("Navigation & Tab Switching:\n", style=f"bold {KRAFT}")
 
         nav_rows = [
             ("1 - 5", "Switch tabs (Workbench, Creds, Leads, Evidence, Pivots)"),
@@ -57,10 +56,10 @@ class HelpModal(ModalScreen[None]):
         ]
         for key, desc in nav_rows:
             help_text.append("  ")
-            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{key:<14}", style=TERRACOTTA)
             help_text.append(f"{desc}\n")
 
-        help_text.append("\nAssessment Workflow:\n", style="bold yellow")
+        help_text.append("\nAssessment Workflow:\n", style=f"bold {KRAFT}")
         workflow_rows = [
             ("n", "Open state-aware Triage: known vs unknown, and the highest-value next move"),
             ("s", "I'm Stuck: rabbit-hole analysis (dead ends vs untested surface vs un-sprayed creds)"),
@@ -69,13 +68,14 @@ class HelpModal(ModalScreen[None]):
         ]
         for key, desc in workflow_rows:
             help_text.append("  ")
-            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{key:<14}", style=TERRACOTTA)
             help_text.append(f"{desc}\n")
 
-        help_text.append("\nEngagement Actions:\n", style="bold yellow")
+        help_text.append("\nEngagement Actions:\n", style=f"bold {KRAFT}")
         action_rows = [
             ("Space", "Cycle status of selected checklist item or lead"),
             ("r", "Run selected recipe — auto-routes to Initial Recon when no service is selected"),
+            ("^R / ^S", "Inside Runner modal: execute recipe / save output to evidence"),
             ("i", "Launch Initial Reconnaissance for the selected target (phase 0)"),
             ("a", "Add target host / ports manually"),
             ("c", "Save discovered credential to vault"),
@@ -87,19 +87,21 @@ class HelpModal(ModalScreen[None]):
         ]
         for key, desc in action_rows:
             help_text.append("  ")
-            help_text.append(f"{key:<14}", style="bold cyan")
+            help_text.append(f"{key:<14}", style=TERRACOTTA)
             help_text.append(f"{desc}\n")
 
         return help_text
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("[bold cyan]SYNAPSE // Keyboard Shortcuts & Operator Guide[/bold cyan]")
+    def compose_body(self) -> ComposeResult:
+        with VerticalScroll(id="help-scroll"):
             yield Static(self._build_help_text(), id="help-content")
-            yield Button("Close (Esc)", variant="primary", id="btn-close")
+            yield Static(
+                f"[{MUTED}]Runner modal supports ^R to run and ^S to save output as evidence.[/]",
+                id="help-footnote",
+            )
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def modal_buttons(self) -> List[ModalButton]:
+        return [ModalButton("Close", "btn-close", "primary")]
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(None)
+    def key_hints(self):
+        return [("ESC", "Back"), ("Q", "Close")]

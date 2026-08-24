@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.widgets import Static, DataTable
 
 from synapse.models import ChecklistItem, Evidence, Service
+from synapse.tui.theme import KRAFT, MUTED, SAGE, TERRACOTTA
 from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
@@ -20,8 +21,8 @@ class EvidenceViewWidget(Vertical):
     """
 
     def compose(self) -> ComposeResult:
-        yield Static("[bold cyan]Evidence & Flag Proof Ledger[/bold cyan]", id="evidence-header")
-        yield Static("[dim]Exam-compliant proof records with target/service/check relationships intact.[/dim]")
+        yield Static("[bold]Evidence & Flag Proof Ledger[/bold]", id="evidence-header")
+        yield Static(f"[{MUTED}]Exam-compliant proof records with target/service/check relationships intact.[/]")
         table = DataTable(id="evidence-table", cursor_type="row")
         table.add_columns(
             "ID", "Target", "Service", "Type", "Title / Context", "Linked Check", "Flag Hash", "Command Executed", "Timestamp (UTC)"
@@ -42,31 +43,31 @@ class EvidenceViewWidget(Vertical):
 
         for ev in evidence_list:
             cmd_preview = ev.command if len(ev.command) <= 35 else ev.command[:32] + "..."
-            flag_disp = f"[bold green]{escape(ev.flag_hash)}[/bold green]" if ev.flag_hash else "-"
+            flag_disp = f"[bold {SAGE}]{escape(ev.flag_hash)}[/]" if ev.flag_hash else "-"
 
             svc_disp = "-"
             if ev.service_id and ev.service_id in services_map:
                 svc = services_map[ev.service_id]
                 svc_disp = f"{svc.port}/{svc.protocol} {escape(svc.name)}"
 
-            check_disp = "[dim]-[/dim]"
+            check_disp = f"[{MUTED}]-[/]"
             if ev.checklist_id and ev.checklist_id in checks_map:
                 title = checks_map[ev.checklist_id].title
-                check_disp = f"[cyan]{escape(title[:40])}[/cyan]"
+                check_disp = f"[{TERRACOTTA}]{escape(title[:40])}[/]"
             elif ev.title.startswith("Output for: "):
                 # Legacy evidence saved before checklist linkage existed
                 origin = ev.title[len("Output for: "):]
-                check_disp = f"[dim]{escape(origin[:40])}[/dim]"
+                check_disp = f"[{MUTED}]{escape(origin[:40])}[/]"
 
             table.add_row(
                 str(ev.id),
                 escape(ev.target_ip or "-"),
                 svc_disp,
-                f"[magenta]{escape(ev.proof_type.value)}[/magenta]",
+                f"[{KRAFT}]{escape(ev.proof_type.value)}[/]",
                 f"[bold]{escape(ev.title[:45])}[/bold]",
                 check_disp,
                 flag_disp,
-                f"[cyan]{escape(cmd_preview)}[/cyan]",
+                f"[{TERRACOTTA}]{escape(cmd_preview)}[/]",
                 ev.created_at.strftime("%Y-%m-%d %H:%M"),
                 key=str(ev.id),
             )

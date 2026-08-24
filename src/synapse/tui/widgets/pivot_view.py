@@ -8,14 +8,15 @@ from textual.containers import Vertical
 from textual.widgets import Static, DataTable
 
 from synapse.models import PivotRoute
+from synapse.tui.theme import MUTED, SAGE, TERRACOTTA
 
 
 class PivotViewWidget(Vertical):
     """Table of active pivot routes and proxychains configuration helpers."""
 
     def compose(self) -> ComposeResult:
-        yield Static("[bold cyan]Network Pivoting & Route Sentinel[/bold cyan]", id="pivot-header")
-        yield Static("[dim]Multi-hop lab routing state, SOCKS5 bindings, and proxychains command prefixes.[/dim]")
+        yield Static("[bold]Network Pivoting & Route Sentinel[/bold]", id="pivot-header")
+        yield Static(f"[{MUTED}]Multi-hop lab routing state, SOCKS5 bindings, and proxychains command prefixes.[/]")
         table = DataTable(id="pivot-table", cursor_type="row")
         table.add_columns("ID", "Route Name", "Jump Host IP", "Target Subnet", "Tunnel Type", "Local Bind", "Status")
         yield table
@@ -25,12 +26,12 @@ class PivotViewWidget(Vertical):
         table.clear()
 
         for r in routes:
-            st_color = "[green]ACTIVE[/green]" if r.status == "active" else f"[dim]{r.status.upper()}[/dim]"
+            st_color = f"[{SAGE}]ACTIVE[/]" if r.status == "active" else f"[{MUTED}]{r.status.upper()}[/]"
             table.add_row(
                 str(r.id),
                 f"[bold]{r.name}[/bold]",
                 r.jump_host_ip,
-                f"[cyan]{r.target_subnet}[/cyan]",
+                f"[{TERRACOTTA}]{r.target_subnet}[/]",
                 r.tunnel_type,
                 r.local_bind,
                 st_color,

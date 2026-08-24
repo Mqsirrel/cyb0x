@@ -2,42 +2,30 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import List
+
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Select
+from textual.widgets import Input, Label, Select
+
+from synapse.tui.modals.base import ModalButton, SynapseModal
+from synapse.tui.theme import SAGE
 
 
-class ExportModal(ModalScreen[dict]):
+class ExportModal(SynapseModal[dict]):
     """Dialog for exporting engagement reports."""
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
     ]
 
+    GLYPH = "▸"
+    TITLE = "EXPORT — Engagement Report & Workspace"
+
     DEFAULT_CSS = """
-    ExportModal {
-        align: center middle;
-    }
-    #dialog {
-        padding: 1 2;
-        width: 68;
+    ExportModal #dialog {
+        width: 72;
         height: auto;
-        border: thick $primary;
-        background: $surface;
-    }
-    .field-label {
-        margin-top: 1;
-        text-style: bold;
-    }
-    #buttons {
-        margin-top: 2;
-        align: right middle;
-    }
-    Button {
-        margin-left: 2;
     }
     """
 
@@ -52,28 +40,31 @@ class ExportModal(ModalScreen[dict]):
         super().__init__(**kwargs)
         self.default_output = default_output
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("[bold cyan]Export Assessment Report & Workspace[/bold cyan]")
-            yield Label("Export Format:", classes="field-label")
-            yield Select(
-                [
-                    ("Notion Workspace Bundle (Nested Pages & Callouts)", "notion"),
-                    ("Single-File Markdown (OffSec/eJPT format)", "markdown"),
-                    ("Obsidian Vault (Wikilink note graph)", "obsidian"),
-                    ("Complete JSON State Backup", "json"),
-                ],
-                value="notion",
-                id="export-format",
-                allow_blank=False,
-            )
+    def compose_body(self) -> ComposeResult:
+        yield Label("Export Format:", classes="field-label")
+        yield Select(
+            [
+                ("Notion Workspace Bundle (Nested Pages & Callouts)", "notion"),
+                ("Single-File Markdown (OffSec/eJPT format)", "markdown"),
+                ("Obsidian Vault (Wikilink note graph)", "obsidian"),
+                ("Complete JSON State Backup", "json"),
+            ],
+            value="notion",
+            id="export-format",
+            allow_blank=False,
+        )
 
-            yield Label("Destination Path / Directory:", classes="field-label")
-            yield Input(value=self.default_output, id="export-path")
+        yield Label("Destination Path / Directory:", classes="field-label")
+        yield Input(value=self.default_output, id="export-path")
 
-            with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="btn-cancel")
-                yield Button("Export Now", variant="success", id="btn-export")
+    def modal_buttons(self) -> List[ModalButton]:
+        return [
+            ModalButton("Cancel", "btn-cancel", "default"),
+            ModalButton("Export Now", "btn-export", "success"),
+        ]
+
+    def key_hints(self):
+        return [("ESC", "Cancel")]
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Swaps the suggested destination path when the format changes."""
@@ -82,19 +73,15 @@ class ExportModal(ModalScreen[dict]):
         if suggested and path_input.value in self.SUGGESTED_PATHS.values():
             path_input.value = suggested
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def on_modal_button(self, button_id: str) -> None:
+        if button_id != "btn-export":
+            return
+        fmt = self.query_one("#export-format", Select).value
+        path_val = self.query_one("#export-path", Input).value.strip()
+        if not path_val:
+            return
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-export":
-            fmt = self.query_one("#export-format", Select).value
-            path_val = self.query_one("#export-path", Input).value.strip()
-            if not path_val:
-                return
-
-            self.dismiss({
-                "format": fmt,
-                "output_path": path_val,
-            })
-        else:
-            self.dismiss(None)
+        self.dismiss({
+            "format": fmt,
+            "output_path": path_val,
+        })

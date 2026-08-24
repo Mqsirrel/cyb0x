@@ -7,12 +7,14 @@ from typing import Dict, List, Optional
 from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, Label, Static
+from textual.containers import VerticalScroll
+from textual.widgets import DataTable, Static
+
+from synapse.tui.modals.base import ModalButton, SynapseModal
+from synapse.tui.theme import MUTED, TERRACOTTA
 
 
-class InitialReconModal(ModalScreen[dict]):
+class InitialReconModal(SynapseModal[dict]):
     """Dialog listing host-level recon recipes for a target before any service is discovered.
 
     Dismisses with ``{"title": ..., "command": ...}`` so the app can hand the
@@ -21,22 +23,24 @@ class InitialReconModal(ModalScreen[dict]):
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "run_selected", "Run Selected"),
     ]
 
+    GLYPH = "▸"
+    TITLE = "RECON — Phase-0 Host Reconnaissance"
+
     DEFAULT_CSS = """
-    InitialReconModal {
-        align: center middle;
-    }
-    #dialog {
-        padding: 1 2;
-        width: 90;
+    InitialReconModal #dialog {
+        width: 96;
         height: auto;
-        max-height: 80%;
-        border: thick $primary;
-        background: $surface;
+        max-height: 85%;
+    }
+    #recon-scroll {
+        height: auto;
+        max-height: 100%;
+        margin-top: 1;
     }
     #recon-hint {
-        margin-top: 1;
         color: $text-muted;
     }
     #recon-table {
@@ -44,25 +48,21 @@ class InitialReconModal(ModalScreen[dict]):
         min-height: 8;
         margin-top: 1;
     }
-    #buttons {
-        margin-top: 1;
-        align: right middle;
-    }
-    Button {
-        margin-left: 2;
-    }
     """
 
     def __init__(self, target_ip: str, recipes: List[Dict[str, str]], **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(
+            context=(
+                f"Target [bold {TERRACOTTA}]{escape(target_ip)}[/] · "
+                f"[{MUTED}]recipes seed methodology checklists automatically[/]"
+            ),
+            **kwargs,
+        )
         self.target_ip = target_ip
         self.recipes = [r for r in recipes if r.get("command_template")]
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label(
-                f"[bold cyan]Initial Reconnaissance — {escape(self.target_ip)}[/bold cyan]"
-            )
+    def compose_body(self) -> ComposeResult:
+        with VerticalScroll(id="recon-scroll"):
             yield Static(
                 "[dim]Phase 0 recipes for hosts with no discovered services yet. "
                 "Nmap stdout is parsed automatically after execution to seed service recipes.[/dim]",
@@ -72,9 +72,14 @@ class InitialReconModal(ModalScreen[dict]):
             table.add_columns("Category", "Recon Check", "Command Recipe")
             yield table
 
-            with Horizontal(id="buttons"):
-                yield Button("Cancel", variant="default", id="btn-cancel")
-                yield Button("Run Selected", variant="warning", id="btn-run")
+    def modal_buttons(self) -> List[ModalButton]:
+        return [
+            ModalButton("Cancel", "btn-cancel", "default"),
+            ModalButton("Run Selected", "btn-run", "primary"),
+        ]
+
+    def key_hints(self):
+        return [("ESC", "Cancel"), ("ENTER", "Run Selected")]
 
     def on_mount(self) -> None:
         table = self.query_one("#recon-table", DataTable)
@@ -84,7 +89,7 @@ class InitialReconModal(ModalScreen[dict]):
             table.add_row(
                 escape((rc.get("category") or "recon").upper()),
                 escape(rc.get("title", "")),
-                f"[cyan]{escape(preview)}[/cyan]",
+                f"[{TERRACOTTA}]{escape(preview)}[/]",
                 key=str(idx),
             )
 
@@ -98,18 +103,14 @@ class InitialReconModal(ModalScreen[dict]):
         except (ValueError, IndexError):
             return None
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+    def action_run_selected(self) -> None:
         rc = self._selected_recipe()
         if rc:
             self.dismiss({"title": rc.get("title", ""), "command": rc.get("command_template", "")})
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-cancel":
-            self.dismiss(None)
-        elif event.button.id == "btn-run":
-            rc = self._selected_recipe()
-            if rc:
-                self.dismiss({"title": rc.get("title", ""), "command": rc.get("command_template", "")})
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_run_selected()
+
+    def on_modal_button(self, button_id: str) -> None:
+        if button_id == "btn-run":
+            self.action_run_selected()

@@ -36,7 +36,7 @@ from synapse.tui.modals.add_lead_modal import AddLeadModal
 from synapse.tui.modals.add_target_modal import AddTargetModal
 from synapse.tui.modals.export_modal import ExportModal
 from synapse.tui.modals.help_modal import HelpModal
-from synapse.tui.modals.runner_modal import RunnerModal
+from synapse.tui.modals.runner_modal import OutputArea, RunnerModal
 from synapse.tui.widgets.cred_matrix import CredentialMatrixWidget
 from synapse.tui.widgets.evidence_view import EvidenceViewWidget
 from synapse.tui.widgets.lead_board import LeadBoardWidget
@@ -233,6 +233,45 @@ async def run_end_to_end_user_simulation():
         await pilot.press("escape")
         await pilot.pause(0.1)
         console.print("[cyan]✔ Step 7: Export Modal Opened, Captured, and Dismissed[/cyan]")
+
+        # Step 8: Runner Modal — ^R execution, result chips, flag strip, ^S save flow
+        await pilot.press("1")
+        await pilot.pause(0.1)
+        runner_results: list = []
+        runner = RunnerModal(
+            command="echo '22/tcp open  ssh     OpenSSH 8.9p1' && echo CTF{sim_runner}",
+            title="Simulation: Recipe Run",
+            context="10.10.11.105 ▸ 22/tcp ssh",
+        )
+        await pilot.app.push_screen(runner, runner_results.append)
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, RunnerModal)
+        assert runner.query_one("#btn-save").disabled is True
+
+        svg_runner_idle = app.export_screenshot()
+        (sim_dir / "sim_8_runner_modal.svg").write_text(svg_runner_idle, encoding="utf-8")
+
+        await pilot.press("ctrl+r")
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if not runner._run_in_flight:
+                break
+        await pilot.pause(0.2)
+
+        chips_plain = runner.query_one("#result-chips").render().plain
+        assert "EXIT 0" in chips_plain, chips_plain
+        assert "1 FLAG" in chips_plain, chips_plain
+        output_area = runner.query_one("#cmd-output", OutputArea)
+        assert "22/tcp open" in output_area.text
+        assert output_area._highlights, "syntax highlighting must be active"
+
+        svg_runner_done = app.export_screenshot()
+        (sim_dir / "sim_8b_runner_results.svg").write_text(svg_runner_done, encoding="utf-8")
+
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert len(runner_results) == 1 and runner_results[0]["action"] == "save_evidence"
+        console.print("[cyan]✔ Step 8: Runner Modal ^R/^S Flow, Chips & Highlighting Verified[/cyan]")
 
         # Return to workbench
         await pilot.press("1")

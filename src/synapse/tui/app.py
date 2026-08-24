@@ -53,6 +53,15 @@ from synapse.tui.modals.initial_recon_modal import InitialReconModal
 from synapse.tui.modals.runner_modal import RunnerModal
 from synapse.tui.modals.stuck_modal import StuckModal
 from synapse.tui.modals.triage_modal import TriageModal
+from synapse.tui.theme import (
+    BACKGROUND,
+    ERROR_RED,
+    KRAFT,
+    MUTED,
+    SAGE,
+    SYNAPSE_THEME,
+    TERRACOTTA,
+)
 from synapse.tui.widgets.cred_matrix import CredentialMatrixWidget
 from synapse.tui.widgets.evidence_view import EvidenceViewWidget
 from synapse.tui.widgets.lead_board import LeadBoardWidget
@@ -84,7 +93,6 @@ class SynapseTUI(App):
         padding: 0 1;
     }
     #stats-banner {
-        dock: top;
         height: 1;
         background: $surface-darken-1;
         color: $text;
@@ -137,6 +145,8 @@ class SynapseTUI(App):
 
     def __init__(self, db_path: str | Path = ":memory:", repo: Optional[DatabaseRepository] = None, **kwargs):
         super().__init__(**kwargs)
+        self.register_theme(SYNAPSE_THEME)
+        self.theme = "synapse"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
         self.selected_target: Optional[Target] = None
@@ -258,11 +268,6 @@ class SynapseTUI(App):
     def update_stats_banner(self, snap: Optional[dict] = None) -> None:
         stats = self.repo.get_stats()
         banner = self.query_one("#stats-banner", Static)
-        pwn_str = f"[bold green]{stats['pwned_targets']}[/bold green]"
-        foothold_str = f"[magenta]{stats['foothold_targets']}[/magenta]"
-        flag_str = f"[bold yellow]{stats['captured_flags']}[/bold yellow]"
-        finding_str = f"[bold red]{stats['total_findings']}[/bold red]"
-        checks_str = f"[cyan]{stats['completed_checks']}/{stats['total_checks']}[/cyan]"
 
         if snap is not None:
             targets, credentials, leads = snap["targets"], snap["credentials"], snap["leads"]
@@ -273,16 +278,18 @@ class SynapseTUI(App):
 
         top = get_top_action(targets, credentials, leads)
         next_str = (
-            f" │ [bold white on #14507d] NEXT: {escape(top.title[:60])} [/]" if top else ""
+            f" │ [bold {BACKGROUND} on {TERRACOTTA}] NEXT: {escape(top.title[:60])} [/]" if top else ""
         )
 
         banner_text = (
-            f" [bold white]🎯 Targets:[/bold white] {stats['total_targets']}{scope_str} (Pwned: {pwn_str} │ Foothold: {foothold_str}) │ "
-            f"[bold white]⚡ Services:[/bold white] {stats['total_services']} │ "
-            f"[bold white]✔ Checks:[/bold white] {checks_str} │ "
-            f"[bold white]★ Findings:[/bold white] {finding_str} │ "
-            f"[bold white]🔑 Creds:[/bold white] {stats['total_credentials']} │ "
-            f"[bold white]🚩 Flags:[/bold white] {flag_str}"
+            f" ▸ [bold]Targets:[/] {stats['total_targets']}{scope_str} │ "
+            f"[{SAGE}]Pwned: [bold]{stats['pwned_targets']}[/bold][/{SAGE}] │ "
+            f"[{KRAFT}]Foothold: {stats['foothold_targets']}[/] │ "
+            f"[bold]Services:[/] {stats['total_services']} │ "
+            f"[bold]Checks:[/] [{MUTED}]{stats['completed_checks']}/{stats['total_checks']}[/] │ "
+            f"[bold]Findings:[/] [bold {ERROR_RED}]{stats['total_findings']}[/] │ "
+            f"[bold]Creds:[/] {len(credentials)} │ "
+            f"[bold]Flags:[/] [bold {TERRACOTTA}]⚑ {stats['captured_flags']}[/]"
             f"{next_str}"
         )
         banner.update(banner_text)
@@ -504,7 +511,14 @@ class SynapseTUI(App):
                 else:
                     self.notify("Recon evidence saved. No parseable service data in output.", title="Initial Recon")
 
-            self.push_screen(RunnerModal(command=chosen["command"], title=f"Recon: {chosen['title']}"), on_result)
+            self.push_screen(
+                RunnerModal(
+                    command=chosen["command"],
+                    title=f"Recon: {chosen['title']}",
+                    context=f"Target [bold {TERRACOTTA}]{recon_target.ip}[/] · phase-0 discovery",
+                ),
+                on_result,
+            )
 
         self.push_screen(InitialReconModal(target_ip=recon_target.ip, recipes=recipes), on_recipe_chosen)
 
@@ -770,7 +784,20 @@ class SynapseTUI(App):
                     self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)  # type: ignore
                     self.notify("Command output attached to evidence and check marked complete!", title="Evidence Captured")
 
-            self.push_screen(RunnerModal(command=item.command_template, title=f"Run: {item.title}"), on_result)
+            svc_ctx = (
+                f"{self.selected_target.ip} ▸ {self.selected_service.port}/{self.selected_service.protocol}"
+                f" {self.selected_service.name}"
+                if self.selected_service
+                else None
+            )
+            self.push_screen(
+                RunnerModal(
+                    command=item.command_template,
+                    title=f"Run: {item.title}",
+                    context=svc_ctx,
+                ),
+                on_result,
+            )
 
         except Exception as e:
             self.notify(f"Error launching recipe: {e}", severity="error")

@@ -4,27 +4,18 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from rich.markup import escape
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import ScrollableContainer, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.containers import ScrollableContainer
+from textual.widgets import Static
 
 from synapse.assessment.engine import NextAction, TargetSnapshot
-
-_PRIORITY_STYLE = {
-    "RECON": "bold white on #14507d",
-    "EXPLOIT": "bold white on #801818",
-    "ENUM": "bold black on #7da800",
-    "SPRAY": "bold black on #c7a400",
-    "RESUME": "bold yellow on #3b3014",
-    "CLEANUP": "dim white on #262626",
-}
+from synapse.tui.modals.base import ModalButton, SynapseModal
+from synapse.tui.theme import MUTED, SAGE, KRAFT, triage_chip
 
 
-class TriageModal(ModalScreen[None]):
+class TriageModal(SynapseModal[None]):
     """Answers: what do I know about this target, and what is the highest-value next move?"""
 
     BINDINGS = [
@@ -33,38 +24,36 @@ class TriageModal(ModalScreen[None]):
         Binding("n", "cancel", "Close", show=False),
     ]
 
+    GLYPH = "▸"
+    TITLE = "TRIAGE — State-Aware Situation Board"
+
     DEFAULT_CSS = """
-    TriageModal {
-        align: center middle;
-    }
-    #dialog {
-        padding: 1 2;
+    TriageModal #dialog {
         width: 100;
         height: 80%;
-        border: thick $primary;
-        background: $surface;
+    }
+    TriageModal #modal-body {
+        height: 1fr;
     }
     #triage-scroll {
         height: 1fr;
-        margin-top: 1;
     }
     .section-title {
         margin-top: 1;
         text-style: bold;
-        color: $accent;
-    }
-    .snapshot-line {
-        margin-left: 1;
-    }
-    Button {
-        margin-top: 1;
-        align: center middle;
+        color: $warning;
     }
     """
 
     def __init__(self, snapshots: List[TargetSnapshot], actions: List[NextAction],
                  focus_ip: Optional[str] = None, **kwargs):
-        super().__init__(**kwargs)
+        context = (
+            f"Focus [bold {KRAFT}]{focus_ip}[/] · {len(snapshots)} target(s) assessed · "
+            f"{len(actions)} open investigation(s)"
+            if focus_ip
+            else f"{len(snapshots)} target(s) assessed · {len(actions)} open investigation(s)"
+        )
+        super().__init__(context=context, **kwargs)
         self.snapshots = snapshots
         self.actions = actions
         self.focus_ip = focus_ip
@@ -78,7 +67,7 @@ class TriageModal(ModalScreen[None]):
         for snap in ordered:
             scope_tag = "" if snap.in_scope else " [OUT-OF-SCOPE]"
             status_tag = f" [{snap.status.value.upper()}]"
-            txt.append(f"{snap.label}{scope_tag}{status_tag}\n", style="bold cyan")
+            txt.append(f"{snap.label}{scope_tag}{status_tag}\n", style="bold")
             known = (
                 f"services {snap.services_total}"
                 f" (untested {snap.services_untested}, dead-end {snap.services_dead_end},"
@@ -100,35 +89,34 @@ class TriageModal(ModalScreen[None]):
             txt.append(f"    Known:     {known}\n")
             txt.append(f"    Tested:    {planned} — coverage {snap.coverage:.0%}{extra_str}\n")
             if snap.is_bare and snap.in_scope:
-                txt.append("    Unknown:   attack surface not mapped — run initial recon ('i')\n", style="yellow")
+                txt.append("    Unknown:   attack surface not mapped — run initial recon ('i')\n", style=KRAFT)
             txt.append("\n")
         return txt
 
     def _build_actions_text(self) -> Text:
         txt = Text()
         if not self.actions:
-            txt.append("No open investigations. Everything in scope is either resolved or pwned. GG.\n", style="green")
+            txt.append("No open investigations. Everything in scope is either resolved or pwned. GG.\n", style=SAGE)
             return txt
         for i, act in enumerate(self.actions, 1):
-            style = _PRIORITY_STYLE.get(act.priority_label, "dim")
+            chip = triage_chip(act.priority_label)
             txt.append("  ")
-            txt.append(f"[{i}] {act.priority_label:^8}", style=style)
+            txt.append(Text.from_markup(f"{chip}"))
             txt.append(f"  {act.title}\n")
-            txt.append(f"       why: {act.rationale}\n", style="dim")
+            txt.append(f"       why: {act.rationale}\n", style=MUTED)
         return txt
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("[bold cyan]SYNAPSE // State-Aware Triage[/bold cyan]")
-            with ScrollableContainer(id="triage-scroll"):
-                yield Static(self._build_state_text(), id="state-block")
-                yield Label("[bold yellow]Highest-Value Next Investigations:[/bold yellow]", classes="section-title")
-                yield Static(self._build_actions_text(), id="actions-block")
-            yield Button("Back to Workbench (Esc)", variant="primary", id="btn-close")
+    def compose_body(self) -> ComposeResult:
+        with ScrollableContainer(id="triage-scroll"):
+            yield Static(self._build_state_text(), id="state-block")
+            yield Static(
+                Text.from_markup("[bold]Highest-Value Next Investigations:[/bold]"),
+                classes="section-title",
+            )
+            yield Static(self._build_actions_text(), id="actions-block")
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def modal_buttons(self) -> List[ModalButton]:
+        return [ModalButton("Back to Workbench", "btn-close", "primary")]
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-close":
-            self.dismiss(None)
+    def key_hints(self):
+        return [("ESC", "Back"), ("Q", "Close")]

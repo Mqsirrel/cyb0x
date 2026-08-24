@@ -9,6 +9,7 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
 from synapse.models import Credential, Target
+from synapse.tui.theme import KRAFT, MUTED, SAGE, TERRACOTTA, cred_test_chip
 from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
@@ -16,10 +17,10 @@ class CredentialMatrixWidget(Vertical):
     """Table of discovered credentials, cross-target testing status, and spray gaps."""
 
     def compose(self) -> ComposeResult:
-        yield Static("[bold cyan]Credential Vault & Lateral Movement Matrix[/bold cyan]", id="cred-header")
+        yield Static("[bold]Credential Vault & Lateral Movement Matrix[/bold]", id="cred-header")
         yield Static(
-            "[dim]Lifecycle per host: press 't' to cycle untested → valid → invalid for the selected target. "
-            "⚠ column = in-scope hosts this credential has never touched.[/dim]"
+            f"[{MUTED}]Lifecycle per host: press 't' to cycle untested → valid → invalid for the selected target. "
+            f"⚠ column = in-scope hosts this credential has never touched.[/]"
         )
         table = DataTable(id="cred-table", cursor_type="row")
         table.add_columns("ID", "Domain", "Username", "Secret / Hash", "Type", "Scope", "Tested Targets / Admin Status", "⚠ Unsprayed Hosts")
@@ -40,27 +41,20 @@ class CredentialMatrixWidget(Vertical):
                     continue  # Skip redundant compound key in display
                 host_ip = str(tip).split(":")[0]
                 tested_hosts.add(host_ip)
-                if tdata.get("admin"):
-                    status_mark = f"[bold white on #143520] {escape(host_ip)}:✔(Admin) [/]"
-                elif tdata.get("valid"):
-                    status_mark = f"[bold green] {escape(host_ip)}:✔ [/bold green]"
-                else:
-                    status_mark = f"[dim red] {escape(host_ip)}:✖ [/dim red]"
-                tested_summary.append(status_mark)
+                tested_summary.append(cred_test_chip(host_ip, bool(tdata.get("valid")), bool(tdata.get("admin"))))
 
-            tested_str = " ".join(tested_summary) if tested_summary else "[dim]Untested[/dim]"
+            tested_str = " ".join(tested_summary) if tested_summary else f"[{MUTED}]Untested[/]"
 
             untested_hosts = [t.ip for t in live_targets if t.ip not in tested_hosts]
             if untested_hosts and any(
                 isinstance(d, dict) and d.get("valid") for d in c.tested_targets.values()
             ):
-                # Only flag spray gaps for creds that have proven valid somewhere
                 preview = ", ".join(untested_hosts[:3]) + ("…" if len(untested_hosts) > 3 else "")
-                spray_str = f"[bold yellow]{len(untested_hosts)}: {escape(preview)}[/bold yellow]"
+                spray_str = f"[bold {KRAFT}]{len(untested_hosts)}: {escape(preview)}[/]"
             elif untested_hosts:
-                spray_str = f"[dim]{len(untested_hosts)} untouched[/dim]"
+                spray_str = f"[{MUTED}]{len(untested_hosts)} untouched[/]"
             else:
-                spray_str = "[green]full coverage[/green]"
+                spray_str = f"[{SAGE}]full coverage[/]"
 
             secret_disp = c.secret if len(c.secret) <= 30 else c.secret[:27] + "..."
 
@@ -68,8 +62,8 @@ class CredentialMatrixWidget(Vertical):
                 str(c.id),
                 escape(c.domain or "-"),
                 f"[bold]{escape(c.username)}[/bold]",
-                f"[yellow]{escape(secret_disp)}[/yellow]",
-                f"[magenta]{escape(c.cred_type.value)}[/magenta]",
+                f"[{KRAFT}]{escape(secret_disp)}[/]",
+                f"[{TERRACOTTA}]{escape(c.cred_type.value)}[/]",
                 escape(c.service_scope or "general"),
                 tested_str,
                 spray_str,

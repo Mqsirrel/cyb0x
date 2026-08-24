@@ -7,14 +7,15 @@ from typing import List
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import ScrollableContainer, Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Button, Label, Static
+from textual.containers import ScrollableContainer
+from textual.widgets import Static
 
 from synapse.assessment.engine import NextAction, StuckReport
+from synapse.tui.modals.base import ModalButton, SynapseModal
+from synapse.tui.theme import ERROR_RED, KRAFT, MUTED, SAGE
 
 
-class StuckModal(ModalScreen[None]):
+class StuckModal(SynapseModal[None]):
     """Analyzes dead ends vs untouched surface and suggests concrete escape routes.
 
     Deliberately does NOT dump generic command lists: every suggestion is derived
@@ -27,70 +28,70 @@ class StuckModal(ModalScreen[None]):
         Binding("s", "cancel", "Close", show=False),
     ]
 
+    GLYPH = "▸"
+    TITLE = "STUCK — Rabbit-Hole Analysis"
+
     DEFAULT_CSS = """
-    StuckModal {
-        align: center middle;
-    }
-    #dialog {
-        padding: 1 2;
+    StuckModal #dialog {
         width: 100;
         height: 80%;
-        border: thick red;
-        background: $surface;
+    }
+    StuckModal #modal-body {
+        height: 1fr;
     }
     #stuck-scroll {
         height: 1fr;
-        margin-top: 1;
     }
     .section-title {
         margin-top: 1;
         text-style: bold;
-        color: $accent;
-    }
-    Button {
-        margin-top: 1;
-        align: center middle;
+        color: $warning;
     }
     """
 
     def __init__(self, report: StuckReport, **kwargs):
-        super().__init__(**kwargs)
+        verdict = (
+            f"[bold {ERROR_RED}]Rabbit-hole signature detected[/]"
+            if report.is_stuck
+            else f"[bold {SAGE}]Not stuck — open avenues remain[/]"
+        )
+        super().__init__(context=verdict, **kwargs)
         self.report = report
 
     def _build_report_text(self) -> Text:
         txt = Text()
         r = self.report
 
-        txt.append("Proven Dead Ends (stop digging here):\n", style="bold red")
+        txt.append("Proven Dead Ends (stop digging here):\n", style=f"bold {ERROR_RED}")
         if r.dead_end_services or r.dead_end_checks:
             for tag in r.dead_end_services:
                 txt.append(f"  ✖ {tag}\n")
             for tag in r.dead_end_checks:
                 txt.append(f"  ✖ {tag}\n")
-            txt.append("  Dead ends are data, not failure — they shrink the search space.\n", style="dim")
+            txt.append("  Dead ends are data, not failure — they shrink the search space.\n", style=MUTED)
         else:
-            txt.append("  None recorded. Nothing has been conclusively ruled out yet.\n", style="dim")
+            txt.append("  None recorded. Nothing has been conclusively ruled out yet.\n", style=MUTED)
 
-        txt.append("\nUntested Surface (dig here instead):\n", style="bold green")
+        txt.append("\nUntested Surface (dig here instead):\n", style=f"bold {SAGE}")
         if r.untested_ports:
             for tag in r.untested_ports[:12]:
                 txt.append(f"  ○ {tag}\n")
             if len(r.untested_ports) > 12:
-                txt.append(f"  … and {len(r.untested_ports) - 12} more\n", style="dim")
+                txt.append(f"  … and {len(r.untested_ports) - 12} more\n", style=MUTED)
         else:
-            txt.append("  Everything discovered has been touched.\n", style="dim")
+            txt.append("  Everything discovered has been touched.\n", style=MUTED)
 
-        txt.append("\nUn-sprayed Credentials:\n", style="bold yellow")
+        txt.append("\nUn-sprayed Credentials:\n", style=f"bold {KRAFT}")
         if r.unsprayed_credentials:
             for line in r.unsprayed_credentials[:8]:
-                txt.append(f"  🔑 {line}\n")
+                txt.append(f"  @ {line}\n")
         else:
-            txt.append("  No credential is waiting to be tried on a new host.\n", style="dim")
+            txt.append("  No credential is waiting to be tried on a new host.\n", style=MUTED)
 
         if r.stale_leads:
-            txt.append("\nStale Hypotheses (confirm or reject):\n", style="yellow")
+            txt.append("\nStale Hypotheses (confirm or reject):\n", style=KRAFT)
             for line in r.stale_leads[:6]:
-                txt.append(f"  💡 {line}\n")
+                txt.append(f"  ✦ {line}\n")
 
         return txt
 
@@ -101,33 +102,24 @@ class StuckModal(ModalScreen[None]):
                 "⚠ Rabbit-hole signature detected: dead ends exist and no untried surface remains "
                 "in scope. Consider re-scoping ('o'), adding targets ('a'), or stepping back to "
                 "recon with different techniques ('i').\n\n",
-                style="bold red",
+                style=f"bold {ERROR_RED}",
             )
         if not self.report.suggestions:
-            txt.append("No escape routes found — the workspace may be complete or empty.\n", style="green")
+            txt.append("No escape routes found — the workspace may be complete or empty.\n", style=SAGE)
             return txt
-        txt.append("Suggested Escapes (state-derived, not generic):\n", style="bold yellow")
+        txt.append("Suggested Escapes (state-derived, not generic):\n", style=f"bold {KRAFT}")
         for i, act in enumerate(self.report.suggestions, 1):
             txt.append(f"  [{i}] {act.title}\n")
-            txt.append(f"      why: {act.rationale}\n", style="dim")
+            txt.append(f"      why: {act.rationale}\n", style=MUTED)
         return txt
 
-    def compose(self) -> ComposeResult:
-        verdict = (
-            "[bold red]You are in a rabbit hole.[/bold red]"
-            if self.report.is_stuck
-            else "[bold green]You are not stuck[/bold green] — open avenues remain."
-        )
-        with Vertical(id="dialog"):
-            yield Label(f"[bold cyan]SYNAPSE // Rabbit-Hole Triage[/bold cyan] — {verdict}")
-            with ScrollableContainer(id="stuck-scroll"):
-                yield Static(self._build_report_text(), id="stuck-report-block")
-                yield Static(self._build_escape_text(), id="escape-block")
-            yield Button("Back to Work (Esc)", variant="primary", id="btn-close")
+    def compose_body(self) -> ComposeResult:
+        with ScrollableContainer(id="stuck-scroll"):
+            yield Static(self._build_report_text(), id="stuck-report-block")
+            yield Static(self._build_escape_text(), id="escape-block")
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+    def modal_buttons(self) -> List[ModalButton]:
+        return [ModalButton("Back to Work", "btn-close", "primary")]
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-close":
-            self.dismiss(None)
+    def key_hints(self):
+        return [("ESC", "Back"), ("Q", "Close")]
