@@ -9,6 +9,7 @@ from synapse.assessment import (
     get_top_action,
     unsprayed_hosts_for_credential,
 )
+from synapse.assessment.engine import PRIORITY_EXPLOIT
 from synapse.db.repository import DatabaseRepository
 from synapse.models import (
     ChecklistStatus,
@@ -333,3 +334,223 @@ def test_action_limit_truncates_output():
         repo.add_or_get_target(f"10.10.10.{i + 1}")
     actions = get_next_actions(repo.list_targets(), limit=2)
     assert len(actions) == 2
+
+
+# ---------------------------------------------------------------------------
+# End-to-end scenario traces (one per engagement state)
+# ---------------------------------------------------------------------------
+
+def test_scenario1_fresh_target_knows_nothing_but_recon():
+    """Unknown ≠ tested-clean: a bare host has no coverage and one move."""
+    repo = _seed_repo()
+    repo.add_or_get_target("10.0.0.1", hostname="fresh.corp.local")
+
+    snap = build_snapshots(repo.list_targets())["10.0.0.1"]
+    assert snap.is_bare
+    assert snap.services_total == 0
+    assert snap.coverage == 1.0  # vacuously complete: nothing planned yet
+
+    actions = get_next_actions(repo.list_targets())
+    assert [a.kind for a in actions] == ["recon"], "bare host must produce exactly recon"
+    assert "attack surface is unknown" in actions[0].rationale
+
+
+def test_scenario2_http_enum_then_silence_once_complete():
+    """Completing the enum action must remove it — no repeat recommendations."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.2")
+    svc = repo.add_or_update_service(t.id, 80, "tcp", "http", product="nginx")
+    chk = repo.add_checklist_item(svc.id, title="dirb sweep")
+
+    actions = get_next_actions(repo.list_targets())
+    assert [a.kind for a in actions] == ["enum"]
+    assert "80" in actions[0].title
+
+    # Simulate the operator finishing the work.
+    repo.update_checklist_status(chk.id, ChecklistStatus.CHECKED)
+    repo.refresh_service_state(svc.id)
+    assert get_next_actions(repo.list_targets()) == [], "finished host must go quiet"
+
+
+def test_scenario3_smb_dead_end_moves_to_rabbit_hole_not_pending():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.3")
+    svc = repo.add_or_update_service(t.id, 445, "tcp", "microsoft-ds")
+    chk = repo.add_checklist_item(svc.id, title="enum4linux")
+    assert get_next_actions(repo.list_targets())[0].kind == "enum"
+
+    repo.update_checklist_status(chk.id, ChecklistStatus.DEAD_END)
+    repo.refresh_service_state(svc.id)
+
+    actions = get_next_actions(repo.list_targets())
+    assert not [a for a in actions if a.target_ip == "10.0.0.3"], "dead-end port must not resurface"
+
+    report = detect_rabbit_holes(repo.list_targets(), [], [])
+    assert any("445" in s for s in report.dead_end_services)
+    assert report.is_stuck
+
+
+def test_scenario4_credential_lifecycle_updates_recommendations():
+    """Admin cred → exploit + spray; owning the box and recording tests retires both."""
+    repo = _seed_repo()
+    t1 = repo.add_or_get_target("10.0.0.4")
+    svc = repo.add_or_update_service(t1.id, 22, "tcp", "ssh")
+    repo.add_checklist_item(svc.id, title="banner grab")
+    t2 = repo.add_or_get_target("10.0.0.8")
+    repo.add_or_update_service(t2.id, 22, "tcp", "ssh")
+
+    cred = repo.add_credential("root", "toor", target_id=t1.id)
+    repo.record_credential_test(cred.id, "10.0.0.4", valid=True, admin=True)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    exploits = [a for a in actions if a.kind == "exploit" and a.port is None]
+    sprays = [a for a in actions if a.kind == "spray"]
+    assert exploits and sprays, "admin-valid cred must drive exploit; other hosts drive spray"
+    assert "10.0.0.8" in sprays[0].title
+    assert exploits[0].priority < sprays[0].priority, "confirmed access outranks spraying"
+
+    # Completing those actions retires them.
+    repo.record_credential_test(cred.id, "10.0.0.8", valid=False)
+    repo.update_target_status(t1.id, TargetStatus.PWNED)
+    actions2 = get_next_actions(repo.list_targets(), repo.list_credentials())
+    assert not [a for a in actions2 if a.kind == "exploit"]
+    assert not [a for a in actions2 if a.kind == "spray"]
+
+
+def test_scenario5_partial_progress_lists_only_untouched_surface():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.5")
+    done_svc = repo.add_or_update_service(t.id, 21, "tcp", "ftp", status=ServiceStatus.ENUMERATED)
+    repo.add_checklist_item(done_svc.id, title="anon ftp", status=ChecklistStatus.CHECKED)
+    todo_svc = repo.add_or_update_service(t.id, 139, "tcp", "netbios-ssn")
+    repo.add_checklist_item(todo_svc.id, title="nbtstat scan")
+
+    snap = build_snapshots(repo.list_targets())["10.0.0.5"]
+    assert snap.services_enumerated == 1 and snap.services_untested == 1
+    assert abs(snap.coverage - 0.5) < 1e-9, "one of two checks resolved"
+
+    actions = get_next_actions(repo.list_targets())
+    enums = [a for a in actions if a.kind == "enum"]
+    resumes = [a for a in actions if a.kind == "resume"]
+    assert len(enums) == 1, "one consolidated enum action per host"
+    assert "139" in enums[0].title and "(21)" not in enums[0].title
+    assert not resumes, "TODO backlog must not compete with untouched ports"
+
+
+def test_scenario6_confirmed_finding_becomes_top_exploit_action():
+    """Regression: a VULNERABLE host used to produce ZERO recommendations."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.6")
+    svc = repo.add_or_update_service(t.id, 80, "tcp", "http")
+    repo.add_checklist_item(svc.id, title="shellshock cgi", status=ChecklistStatus.FINDING)
+    repo.add_checklist_item(svc.id, title="dirb sweep")  # sibling TODO surface
+
+    snap = build_snapshots(repo.list_targets())["10.0.0.6"]
+    assert snap.checks_finding == 1
+
+    actions = get_next_actions(repo.list_targets())
+    exploits = [a for a in actions if a.kind == "exploit" and a.port == 80]
+    assert exploits, "confirmed finding must drive the next move"
+    assert exploits[0].priority == PRIORITY_EXPLOIT
+    assert "shellshock cgi" in exploits[0].title
+    assert "findings" in exploits[0].rationale
+    assert any(a.kind == "enum" for a in actions), "untouched sibling surface still listed"
+
+    # Gaining foothold retires the exploit nag, like admin-cred suggestions.
+    repo.update_target_status(t.id, TargetStatus.FOOTHOLD)
+    assert not [a for a in get_next_actions(repo.list_targets()) if a.kind == "exploit"]
+
+
+def test_scenario6b_multiple_findings_on_one_service_collapse():
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.6")
+    svc = repo.add_or_update_service(t.id, 443, "tcp", "https")
+    repo.add_checklist_item(svc.id, title="heartbleed", status=ChecklistStatus.FINDING)
+    repo.add_checklist_item(svc.id, title="weak cipher", status=ChecklistStatus.FINDING)
+
+    actions = get_next_actions(repo.list_targets())
+    exploits = [a for a in actions if a.kind == "exploit" and a.port == 443]
+    assert len(exploits) == 1, "several findings on one service are one move"
+    assert "heartbleed" in exploits[0].title and "(+1 more)" in exploits[0].title
+
+
+def test_scenario7_running_check_blocks_false_stuck_verdict():
+    """Regression: interrupted work was invisible to rabbit-hole detection."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.0.0.7")
+    dead_svc = repo.add_or_update_service(t.id, 3306, "tcp", "mysql")
+    repo.add_checklist_item(dead_svc.id, title="default creds", status=ChecklistStatus.DEAD_END)
+    busy_svc = repo.add_or_update_service(t.id, 25, "tcp", "smtp")
+    run_chk = repo.add_checklist_item(busy_svc.id, title="smtp user enum")
+    repo.update_checklist_status(run_chk.id, ChecklistStatus.RUNNING)
+    repo.refresh_service_state(dead_svc.id)
+    repo.refresh_service_state(busy_svc.id)
+
+    report = detect_rabbit_holes(repo.list_targets(), [], [])
+    assert report.running_checks and "smtp user enum" in report.running_checks[0]
+    assert not report.is_stuck, "an interrupted check is open work, not a dead end"
+    assert any(a.kind == "resume" for a in report.suggestions), "resume is an escape route"
+
+    # Finishing the interrupted check leaves pure dead-end -> genuinely stuck.
+    repo.update_checklist_status(run_chk.id, ChecklistStatus.DEAD_END)
+    repo.refresh_service_state(busy_svc.id)
+    report2 = detect_rabbit_holes(repo.list_targets(), [], [])
+    assert not report2.running_checks
+    assert report2.is_stuck
+
+
+def test_scenario8_multi_target_ordering_is_phase_ordered_and_deterministic():
+    repo = _seed_repo()
+    repo.add_or_get_target("10.0.0.9")                                   # recon tier
+    http = repo.add_or_get_target("10.0.0.10")                           # enum tier
+    repo.add_or_update_service(http.id, 8080, "tcp", "http")
+    own = repo.add_or_get_target("10.0.0.11")                            # exploit tier
+    osvc = repo.add_or_update_service(own.id, 445, "tcp", "microsoft-ds")
+    repo.add_checklist_item(osvc.id, title="null session")
+    cred = repo.add_credential("admin", "admin", target_id=own.id)
+    repo.record_credential_test(cred.id, "10.0.0.11", valid=True, admin=True)
+
+    inputs = (repo.list_targets(), repo.list_credentials(), [])
+    actions = get_next_actions(*inputs, limit=10)
+
+    priorities = [a.priority for a in actions]
+    assert priorities == sorted(priorities), "actions must be phase-ordered"
+    kinds = [a.kind for a in actions]
+    assert kinds[0] == "recon"
+    assert kinds.index("exploit") < kinds.index("enum"), "confirmed access beats exploration"
+
+    rerun = get_next_actions(*inputs, limit=10)
+    assert [(a.kind, a.target_ip, a.port) for a in actions] == [
+        (a.kind, a.target_ip, a.port) for a in rerun
+    ], "identical state must yield identical ordering"
+
+
+def test_scenario8b_out_of_scope_host_never_leaks_into_any_action_kind():
+    """Scope enforcement must survive every path, including findings and sprays."""
+    repo = _seed_repo()
+    live = repo.add_or_get_target("10.0.0.12")
+    lsvc = repo.add_or_update_service(live.id, 80, "tcp", "http")
+    repo.add_checklist_item(lsvc.id, title="rce probe", status=ChecklistStatus.FINDING)
+    cred = repo.add_credential("sa", "sa", target_id=live.id)
+    repo.record_credential_test(cred.id, "10.0.0.12", valid=True, admin=True)
+
+    oos = repo.add_or_get_target("10.9.9.9")
+    repo.set_target_scope(oos.id, False)
+    osvc = repo.add_or_update_service(oos.id, 80, "tcp", "http")
+    repo.add_checklist_item(osvc.id, title="oos finding", status=ChecklistStatus.FINDING)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    for a in actions:
+        assert a.target_ip != "10.9.9.9", f"{a.kind} leaked an out-of-scope host"
+
+    report = detect_rabbit_holes(repo.list_targets(), repo.list_credentials())
+    leaked = (
+        report.dead_end_services
+        + report.dead_end_checks
+        + report.running_checks
+        + report.untested_ports
+        + report.unsprayed_credentials
+        + [f"{s.title} {s.rationale}" for s in report.suggestions]
+    )
+    for line in leaked:
+        assert "10.9.9.9" not in line

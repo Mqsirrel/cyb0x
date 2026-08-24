@@ -134,6 +134,7 @@ class StuckReport:
 
     dead_end_services: List[str] = field(default_factory=list)
     dead_end_checks: List[str] = field(default_factory=list)
+    running_checks: List[str] = field(default_factory=list)
     untested_ports: List[str] = field(default_factory=list)
     unsprayed_credentials: List[str] = field(default_factory=list)
     stale_leads: List[str] = field(default_factory=list)
@@ -143,7 +144,12 @@ class StuckReport:
     def is_stuck(self) -> bool:
         """Stuck means: activity exists but nothing actionable is left open."""
         has_activity = bool(self.dead_end_services or self.dead_end_checks)
-        no_open_surface = not (self.untested_ports or self.unsprayed_credentials or self.suggestions)
+        no_open_surface = not (
+            self.untested_ports
+            or self.unsprayed_credentials
+            or self.running_checks
+            or self.suggestions
+        )
         return has_activity and no_open_surface
 
 
@@ -258,6 +264,28 @@ def get_next_actions(
                         target_ip=ip,
                     )
                 )
+
+    # 2.5 Confirmed findings awaiting exploitation. Checklist state is the
+    # source of truth here (service status is a derived cache that callers
+    # may not have refreshed).
+    for t in live_targets:
+        if t.status in (TargetStatus.FOOTHOLD, TargetStatus.PWNED):
+            continue
+        for s in t.services:
+            findings = [c.title for c in s.checklists if c.status == ChecklistStatus.FINDING]
+            if not findings:
+                continue
+            label = findings[0] + (f" (+{len(findings) - 1} more)" if len(findings) > 1 else "")
+            actions.append(
+                NextAction(
+                    priority=PRIORITY_EXPLOIT,
+                    kind="exploit",
+                    title=f"Exploit confirmed finding '{label}' on {t.ip}:{s.port}",
+                    rationale=f"{len(findings)} methodology check(s) flagged as findings — capitalize before moving on.",
+                    target_ip=t.ip,
+                    port=s.port,
+                )
+            )
 
     # 3. Untested services with pending methodology checks.
     for t in live_targets:
@@ -395,6 +423,8 @@ def detect_rabbit_holes(
                 tag = f"{svc_tag} — {chk.title}"
                 if chk.status == ChecklistStatus.DEAD_END:
                     report.dead_end_checks.append(tag)
+                elif chk.status == ChecklistStatus.RUNNING:
+                    report.running_checks.append(tag)
                 elif chk.status == ChecklistStatus.TODO:
                     report.untested_ports.append(tag)
 
@@ -409,9 +439,10 @@ def detect_rabbit_holes(
             report.unsprayed_credentials.append(f"{cred.username} → not tried on: {preview}")
 
     # Escape routes mirror the triage engine but only surface the categories
-    # that counteract the stuck feeling.
+    # that counteract the stuck feeling. Resume counts: finishing interrupted
+    # work is exactly how you climb out of a rabbit hole.
     escapes = get_next_actions(targets, credentials, leads, limit=8)
-    report.suggestions = [a for a in escapes if a.kind in ("recon", "enum", "spray", "exploit")]
+    report.suggestions = [a for a in escapes if a.kind in ("recon", "enum", "spray", "exploit", "resume")]
 
     if oos_count:
         report.suggestions.append(
