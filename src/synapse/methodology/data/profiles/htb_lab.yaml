@@ -1,26 +1,56 @@
 id: "htb_lab"
 name: "HackTheBox Lab Methodology"
-description: "Methodology for HTB boxes"
-version: "1.0"
+description: "Boot2Root lab workflow: from port scan to root flag"
+version: "1.1"
 phases:
   - id: "port_scan"
     name: "Port Scan"
+    description: "Full TCP/UDP discovery of the box"
     order: 1
+    checklist_categories: ["recon"]
+    depends_on: []
   - id: "service_enum"
-    name: "Service Enum"
+    name: "Service Enumeration & Fuzzing"
+    description: "Enumerate and fuzz every discovered service"
     order: 2
-  - id: "web_service_fuzzing"
-    name: "Web/Service Fuzzing"
+    checklist_categories: ["enum"]
+    depends_on: ["port_scan"]
+  - id: "vulnerability_research"
+    name: "Vulnerability Research"
+    description: "Match versions and banners to exploitable vectors"
     order: 3
+    checklist_categories: ["vuln_check"]
+    depends_on: ["service_enum"]
   - id: "foothold_user_flag"
     name: "Foothold / User Flag"
+    description: "Land the initial shell and capture user.txt"
     order: 4
-  - id: "internal_enumeration_peas"
-    name: "Internal Enumeration / PEAS"
-    order: 5
+    checklist_categories: ["exploit"]
+    depends_on: ["vulnerability_research"]
+    prerequisites:
+      - condition_type: "evidence_type"
+        value: "user_flag"
+      - condition_type: "target_status"
+        value: "foothold"
+    evidence_required: ["user_flag"]
   - id: "privilege_escalation"
     name: "Privilege Escalation"
-    order: 6
+    description: "Internal enumeration and escalation to root"
+    order: 5
+    checklist_categories: ["privesc"]
+    depends_on: ["foothold_user_flag"]
+    prerequisites:
+      - condition_type: "target_status"
+        value: "foothold"
   - id: "root_flag"
-    name: "Root Flag"
-    order: 7
+    name: "Root Flag Capture"
+    description: "Verify root access and capture proof.txt"
+    order: 6
+    checklist_categories: []
+    depends_on: ["privilege_escalation"]
+    prerequisites:
+      - condition_type: "target_status"
+        value: "pwned"
+      - condition_type: "evidence_type"
+        value: "root_flag"
+    evidence_required: ["root_flag"]

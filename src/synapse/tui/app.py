@@ -260,9 +260,17 @@ class SynapseTUI(App):
         self.register_theme(CLAUDISH_LIGHT_THEME)
         self.register_theme(SYNAPSE_THEME)
         self.theme = "claudish"
-        self.active_profile = "network"
+        self.active_profile = "ejptv2"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
+        self.active_profile = self.repo.get_metadata("active_profile_id", "") or "ejptv2"
+        if not self.methodology.set_active_profile(self.active_profile):
+            # Persisted profile no longer exists (renamed/removed YAML): fall
+            # back to the first bundled profile instead of running profileless.
+            fallback = next(iter(self.methodology.get_available_profiles()), None)
+            self.active_profile = fallback.id if fallback else ""
+            if fallback:
+                self.methodology.set_active_profile(self.active_profile)
         self.selected_target: Optional[Target] = None
         self.selected_service: Optional[Service] = None
         # Cached workspace snapshot (single source for all widgets) + per-tab
@@ -395,8 +403,8 @@ class SynapseTUI(App):
             f" │ [bold {BACKGROUND} on {TERRACOTTA}] NEXT: {escape(top.title[:60])} [/]" if top else ""
         )
 
-        from synapse.tui.modals.profile_modal import PROFILES
-        profile_name = next((p["name"] for p in PROFILES if p["id"] == getattr(self, "active_profile", "network")), "Network Pentest")
+        profile = self.methodology.profile_loader.get_profile(self.active_profile)
+        profile_name = profile.name if profile else "No Profile"
         phase_badge = "[Enum]" # Just hardcode Enum for now as active phase, or calculate it? Let's just put [Active Phase: Recon]
         # Or let's just make it simple
         banner_text = (
@@ -1027,19 +1035,40 @@ class SynapseTUI(App):
         """Open the profile selection modal."""
         if isinstance(self.screen, ModalScreen):
             return
-        
+
         from synapse.tui.modals.profile_modal import ProfileModal
         def _apply_profile(chosen: Optional[str]) -> None:
-            if chosen:
+            if chosen and self.methodology.set_active_profile(chosen):
                 self.active_profile = chosen
+                self.repo.set_metadata("active_profile_id", chosen)
                 self.notify(f"Methodology profile switched", title="Profile Changed")
                 self.update_stats_banner()
 
-        self.push_screen(ProfileModal(active_profile=getattr(self, "active_profile", "network")), _apply_profile)
+        self.push_screen(
+            ProfileModal(
+                profiles=self.methodology.get_available_profiles(),
+                active_profile=self.active_profile,
+            ),
+            _apply_profile,
+        )
 
     def action_guided_workflow(self) -> None:
-        """Open the guided methodology breakdown modal."""
+        """Open the guided methodology breakdown modal for the selected target."""
         if isinstance(self.screen, ModalScreen):
             return
+        from synapse.assessment.engine import evaluate_phase_progress
         from synapse.tui.modals.guided_phase_modal import GuidedPhaseModal
-        self.push_screen(GuidedPhaseModal(active_profile=getattr(self, "active_profile", "network"), stats=self.repo.get_stats()))
+
+        profile = self.methodology.active_profile
+        target = self.selected_target
+        if target is None or profile is None:
+            targets = self._assessment_inputs()[0]
+            target = next((t for t in targets if t.in_scope), None)
+
+        context = f"Target: {target.ip}" + (f" ({target.hostname})" if target.hostname else "") if target else ""
+        progress = (
+            evaluate_phase_progress(target, profile, self.repo.list_evidence(target.id))
+            if target and profile
+            else {}
+        )
+        self.push_screen(GuidedPhaseModal(profile=profile, progress=progress, context=context))

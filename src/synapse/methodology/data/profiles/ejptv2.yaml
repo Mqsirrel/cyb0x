@@ -1,37 +1,58 @@
 id: "ejptv2"
 name: "eJPTv2 Methodology"
-description: "eLearnSecurity Junior Penetration Tester v2 methodology"
-version: "1.0"
+description: "eLearnSecurity Junior Penetration Tester v2 workflow: discovery to proof flags"
+version: "1.1"
 phases:
   - id: "host_discovery"
-    name: "Host Discovery"
-    description: "Identify live hosts on the network"
+    name: "Host Discovery & Port Scanning"
+    description: "Identify live hosts, open ports, and service versions"
     order: 1
-  - id: "network_port_scan"
-    name: "Network/Port Scan"
-    description: "Identify open ports and services"
-    order: 2
+    checklist_categories: ["recon"]
+    depends_on: []
   - id: "service_enumeration"
     name: "Service Enumeration"
-    description: "Enumerate identified services"
+    description: "Enumerate identified services for usernames, shares, versions, and misconfigurations"
+    order: 2
+    checklist_categories: ["enum"]
+    depends_on: ["host_discovery"]
+  - id: "vulnerability_assessment"
+    name: "Vulnerability Assessment"
+    description: "Probe Web/SMB/DB services for exploitable vulnerabilities"
     order: 3
-  - id: "web_smb_db_exploitation"
-    name: "Web/SMB/DB Exploitation"
-    description: "Exploit common services"
+    checklist_categories: ["vuln_check"]
+    depends_on: ["service_enumeration"]
+  - id: "exploitation_foothold"
+    name: "Exploitation & Foothold"
+    description: "Exploit confirmed findings and capture initial access"
     order: 4
-  - id: "foothold"
-    name: "Foothold"
-    description: "Gain initial access"
-    order: 5
+    checklist_categories: ["exploit"]
+    depends_on: ["vulnerability_assessment"]
+    prerequisites:
+      - condition_type: "evidence_type"
+        value: "user_flag"
+      - condition_type: "target_status"
+        value: "foothold"
+    evidence_required: ["user_flag"]
   - id: "local_privesc"
-    name: "Local PrivEsc"
-    description: "Escalate privileges on the system"
-    order: 6
-  - id: "pivoting_routing"
-    name: "Pivoting/Routing"
-    description: "Pivot to internal networks"
-    order: 7
+    name: "Local Privilege Escalation"
+    description: "Escalate privileges on the compromised host"
+    order: 5
+    checklist_categories: ["privesc"]
+    depends_on: ["exploitation_foothold"]
+    prerequisites:
+      - condition_type: "target_status"
+        value: "foothold"
+      - condition_type: "evidence_type"
+        value: "user_flag"
   - id: "proof_flag"
-    name: "Proof Flag"
-    description: "Capture the proof flag"
-    order: 8
+    name: "Proof Flag Capture"
+    description: "Verify elevated access and capture the root/proof flag"
+    order: 6
+    checklist_categories: []
+    depends_on: ["local_privesc"]
+    prerequisites:
+      - condition_type: "target_status"
+        value: "pwned"
+      - condition_type: "evidence_type"
+        value: "root_flag"
+    evidence_required: ["root_flag"]

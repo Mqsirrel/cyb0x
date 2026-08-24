@@ -14,30 +14,11 @@ instant and reproducible.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
-
-
-class PhaseStatus(str, Enum):
-    NOT_STARTED = "not_started"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    BLOCKED = "blocked"
-
-@dataclass
-class PhaseProgress:
-    phase_id: str
-    completed_checks: list[str] = field(default_factory=list)
-    pending_checks: list[str] = field(default_factory=list)
-    running_checks: list[str] = field(default_factory=list)
-    dead_ends: list[str] = field(default_factory=list)
-    findings: list[str] = field(default_factory=list)
-    evidence: list[str] = field(default_factory=list)
-    recommended_actions: list[NextAction] = field(default_factory=list)
-    phase_status: PhaseStatus = PhaseStatus.NOT_STARTED
-
+from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 
 from synapse.models import (
     ChecklistStatus,
@@ -184,6 +165,49 @@ class NextAction:
     @property
     def priority_label(self) -> str:
         return _PRIORITY_LABELS.get(self.priority, "INFO")
+
+
+class PhaseStatus(str, Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+
+
+@dataclass
+class PhaseProgress:
+    """Guided-workflow view of one methodology phase for a single target."""
+
+    phase_id: str
+    completed_checks: list[str] = field(default_factory=list)
+    pending_checks: list[str] = field(default_factory=list)
+    running_checks: list[str] = field(default_factory=list)
+    dead_ends: list[str] = field(default_factory=list)
+    findings: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    recommended_actions: list[NextAction] = field(default_factory=list)
+    phase_status: PhaseStatus = PhaseStatus.NOT_STARTED
+    blocked_reason: str | None = None
+
+    @property
+    def total_checks(self) -> int:
+        return (
+            len(self.completed_checks)
+            + len(self.pending_checks)
+            + len(self.running_checks)
+            + len(self.dead_ends)
+            + len(self.findings)
+        )
+
+    @property
+    def resolved_checks(self) -> int:
+        return len(self.completed_checks) + len(self.findings) + len(self.dead_ends)
+
+    @property
+    def completion_ratio(self) -> float:
+        if self.total_checks == 0:
+            return 1.0 if self.evidence else 0.0
+        return self.resolved_checks / self.total_checks
 
 
 @dataclass
@@ -528,85 +552,203 @@ def detect_rabbit_holes(
     return report
 
 
+# --- Guided methodology workflow (data-driven phase evaluation) -------------
 
-def evaluate_phase_progress(target, profile, repo) -> dict[str, PhaseProgress]:
-    progress = {}
-    phases = profile.get("phases", [])
-    
-    # Pre-populate phases
+# Rank order for target_status prerequisites: a phase unlocked at "foothold"
+# stays unlocked once the target reaches "pwned".
+_STATUS_RANK = {
+    TargetStatus.DISCOVERED: 0,
+    TargetStatus.SCANNING: 1,
+    TargetStatus.ENUMERATED: 2,
+    TargetStatus.FOOTHOLD: 3,
+    TargetStatus.PWNED: 4,
+}
+
+
+def _prerequisite_met(cond, target: Target, evidence_by_type: dict[str, list[str]]) -> bool:
+    if cond.condition_type == "target_status":
+        try:
+            required = _STATUS_RANK[TargetStatus(str(cond.value))]
+        except (KeyError, ValueError):
+            return False
+        return _STATUS_RANK.get(target.status, 0) >= required
+    if cond.condition_type == "evidence_type":
+        return bool(evidence_by_type.get(str(cond.value)))
+    return False
+
+
+def evaluate_phase_progress(
+    target: Target,
+    profile,
+    evidence: Iterable = (),
+) -> dict[str, PhaseProgress]:
+    """Evaluates guided-workflow phase state for one target against a profile.
+
+    Pure function over repository models: ``profile`` is a
+    ``MethodologyProfile`` and ``evidence`` an iterable of ``Evidence``
+    (pass ``repo.list_evidence(target.id)``). No SQL, no LLM.
+
+    Semantics (all data-driven from the profile):
+    - Checks route to phases via ``checklist_categories`` (first phase by
+      order wins when categories overlap).
+    - A phase is BLOCKED until every ``depends_on`` phase is COMPLETED,
+      unless any ``prerequisites`` condition is met (non-linear branch jump).
+    - A phase is COMPLETED when no pending/running checks remain AND every
+      ``evidence_required`` proof type has been captured.
+    """
+    phases = profile.ordered_phases()
+    progress: dict[str, PhaseProgress] = {p.id: PhaseProgress(phase_id=p.id) for p in phases}
+
+    category_owner: dict[str, str] = {}
     for p in phases:
-        progress[p["id"]] = PhaseProgress(phase_id=p["id"])
-    
-    # Gather evidence
-    evidence_rows = repo._conn.execute("SELECT title, proof_type FROM evidence WHERE target_id = ?", (target.id,)).fetchall()
-    proof_types = set()
-    for row in evidence_rows:
-        proof_types.add(row["proof_type"])
-        # Map evidence to phase (simplistic: user/root flag to privesc, others to enum/exploit)
-        if row["proof_type"] in ("user_flag", "root_flag") and "privesc" in progress:
-            progress["privesc"].evidence.append(row["title"])
-        elif "exploit" in progress:
-            progress["exploit"].evidence.append(row["title"])
-            
-    # Gather checklists
+        for cat in p.checklist_categories or []:
+            category_owner.setdefault(cat, p.id)
+
+    # Route checklist items into their phases.
     for svc in target.services:
         for chk in svc.checklists:
-            cat = chk.category
-            if cat not in progress:
-                progress[cat] = PhaseProgress(phase_id=cat)
-            
-            p = progress[cat]
-            if chk.status == ChecklistStatus.CHECKED:
-                p.completed_checks.append(chk.title)
-            elif chk.status == ChecklistStatus.TODO:
-                p.pending_checks.append(chk.title)
-                p.recommended_actions.append(NextAction(
-                    priority=2, kind=cat, title=f"Run {chk.title}", rationale="Pending check", target_ip=target.ip
-                ))
+            pid = category_owner.get(chk.category)
+            if pid is None:
+                continue  # category not claimed by this profile's phases
+            prog = progress[pid]
+            if chk.status == ChecklistStatus.TODO:
+                prog.pending_checks.append(chk.title)
+                prog.recommended_actions.append(
+                    NextAction(
+                        priority=PRIORITY_ENUM,
+                        kind=chk.category or "enum",
+                        title=f"Run '{chk.title}' ({svc.name} on {svc.port}/tcp)",
+                        rationale="Pending methodology check routed to this phase.",
+                        target_ip=target.ip,
+                        port=svc.port,
+                    )
+                )
             elif chk.status == ChecklistStatus.RUNNING:
-                p.running_checks.append(chk.title)
-            elif chk.status == ChecklistStatus.DEAD_END:
-                p.dead_ends.append(chk.title)
+                prog.running_checks.append(chk.title)
+                prog.recommended_actions.append(
+                    NextAction(
+                        priority=PRIORITY_RESUME,
+                        kind="resume",
+                        title=f"Resume '{chk.title}' ({svc.name} on {svc.port}/tcp)",
+                        rationale="Check left in RUNNING state — finish or mark the outcome.",
+                        target_ip=target.ip,
+                        port=svc.port,
+                    )
+                )
+            elif chk.status == ChecklistStatus.CHECKED:
+                prog.completed_checks.append(chk.title)
             elif chk.status == ChecklistStatus.FINDING:
-                p.findings.append(chk.title)
-                
-    # Evaluate Status
-    # Non-linear transitions (Privesc jump)
-    has_foothold = target.status in (TargetStatus.FOOTHOLD, TargetStatus.PWNED) or "user_flag" in proof_types or "root_flag" in proof_types
-    
+                prog.findings.append(chk.title)
+                prog.recommended_actions.append(
+                    NextAction(
+                        priority=PRIORITY_EXPLOIT,
+                        kind="exploit",
+                        title=f"Exploit finding '{chk.title}' ({svc.port}/tcp)",
+                        rationale="Confirmed finding — capitalize on it before further enumeration.",
+                        target_ip=target.ip,
+                        port=svc.port,
+                    )
+                )
+            elif chk.status == ChecklistStatus.DEAD_END:
+                prog.dead_ends.append(chk.title)
+
+    # Index captured evidence by proof type.
+    evidence_by_type: dict[str, list[str]] = defaultdict(list)
+    for ev in evidence:
+        evidence_by_type[ev.proof_type.value].append(ev.title)
+
+    # Attach required evidence to the phases that demand it.
     for p in phases:
-        pid = p["id"]
-        phase_prog = progress[pid]
-        
-        # Check dependencies
-        deps = p.get("depends_on", [])
-        blocked = False
-        for d in deps:
-            if d in progress:
-                # If dependency is not completed and has work to do, it blocks us
-                if progress[d].phase_status != PhaseStatus.COMPLETED and (progress[d].pending_checks or progress[d].running_checks or progress[d].phase_status == PhaseStatus.IN_PROGRESS):
-                    blocked = True
-        
-        if pid == "privesc" and has_foothold:
-            blocked = False
-            if not phase_prog.pending_checks and not phase_prog.running_checks and not phase_prog.completed_checks and not phase_prog.findings and not phase_prog.evidence:
-                phase_prog.phase_status = PhaseStatus.NOT_STARTED
+        for ptype in p.evidence_required or []:
+            progress[p.id].evidence.extend(evidence_by_type.get(ptype, []))
+
+    phases_by_id = {p.id: p for p in phases}
+
+    def _open_work(pid: str) -> tuple[bool, bool]:
+        """(has_open_checks, missing_required_evidence) for a phase."""
+        prog = progress[pid]
+        open_checks = bool(prog.pending_checks or prog.running_checks)
+        missing_ev = any(
+            not evidence_by_type.get(t) for t in (phases_by_id[pid].evidence_required or [])
+        )
+        return open_checks, missing_ev
+
+    _sat_cache: dict[str, bool] = {}
+
+    def deps_satisfied(p, visiting: frozenset = frozenset()) -> bool:
+        """True when every declared dependency is settled: completed outright,
+        or carrying zero work whose own upstream is likewise settled (so
+        sparse engagements aren't gated by permanently empty stages, while a
+        genuinely unfinished upstream keeps the tail of the chain blocked).
+        Cycles degrade to False."""
+        for d in (p.depends_on or []):
+            if d in visiting or d not in phases_by_id:
+                return False
+            if d in _sat_cache:
+                ok = _sat_cache[d]
             else:
-                phase_prog.phase_status = PhaseStatus.IN_PROGRESS
+                prog = progress[d]
+                open_checks, missing_ev = _open_work(d)
+                resolved = bool(prog.completed_checks or prog.findings or prog.dead_ends or prog.evidence)
+                if resolved:
+                    ok = not open_checks and not missing_ev
+                else:
+                    # No work routed here yet: pass-through only if the whole
+                    # upstream spine is equally clear.
+                    ok = (
+                        not open_checks
+                        and not missing_ev
+                        and deps_satisfied(phases_by_id[d], visiting | {d})
+                    )
+                _sat_cache[d] = ok
+            if not ok:
+                return False
+        return True
+
+    for p in phases:
+        prog = progress[p.id]
+
+        deps_met = deps_satisfied(p)
+        prereq_hit = next(
+            (
+                c for c in (p.prerequisites or [])
+                if _prerequisite_met(c, target, evidence_by_type)
+            ),
+            None,
+        )
+
+        if not deps_met and prereq_hit is None:
+            waiting_on = ", ".join(d for d in (p.depends_on or []))
+            prog.phase_status = PhaseStatus.BLOCKED
+            prog.blocked_reason = f"Waiting on phase(s): {waiting_on}" if waiting_on else "Prerequisites not met."
             continue
 
-        if blocked:
-            phase_prog.phase_status = PhaseStatus.BLOCKED
+        if prog.pending_checks or prog.running_checks:
+            had_activity = bool(prog.completed_checks or prog.running_checks or prog.findings or prog.dead_ends)
+            prog.phase_status = PhaseStatus.IN_PROGRESS if had_activity else PhaseStatus.NOT_STARTED
             continue
-            
-        if phase_prog.pending_checks or phase_prog.running_checks:
-            if phase_prog.completed_checks or phase_prog.running_checks or phase_prog.findings or phase_prog.dead_ends:
-                phase_prog.phase_status = PhaseStatus.IN_PROGRESS
-            else:
-                phase_prog.phase_status = PhaseStatus.NOT_STARTED
-        elif phase_prog.completed_checks or phase_prog.findings or phase_prog.dead_ends:
-            phase_prog.phase_status = PhaseStatus.COMPLETED
-        else:
-            phase_prog.phase_status = PhaseStatus.NOT_STARTED
-            
+
+        missing_evidence = [
+            t for t in (p.evidence_required or []) if not evidence_by_type.get(t)
+        ]
+        if missing_evidence:
+            prog.phase_status = PhaseStatus.IN_PROGRESS
+            prog.blocked_reason = None
+            prog.recommended_actions.append(
+                NextAction(
+                    priority=PRIORITY_EXPLOIT,
+                    kind="exploit",
+                    title=f"Capture required proof ({', '.join(missing_evidence)}) to close '{p.name}'",
+                    rationale="All checks resolved but completion requires captured evidence.",
+                    target_ip=target.ip,
+                )
+            )
+            continue
+
+        prog.phase_status = (
+            PhaseStatus.COMPLETED
+            if (prog.completed_checks or prog.findings or prog.dead_ends or prog.evidence)
+            else PhaseStatus.NOT_STARTED
+        )
+
     return progress

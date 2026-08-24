@@ -2,9 +2,10 @@ import pytest
 from pathlib import Path
 import yaml
 from synapse.methodology.profile import (
-    MethodologyProfile, PhaseDefinition, PhaseStatus, PhaseProgress,
+    MethodologyProfile, PhaseDefinition,
     ChecklistMapping, PrerequisiteCondition, ProfileLoader
 )
+from synapse.assessment.engine import PhaseProgress, PhaseStatus
 from synapse.methodology.engine import MethodologyEngine
 
 def test_models():
@@ -30,9 +31,9 @@ def test_models():
     assert profile.phases[0].id == "test_phase"
     assert profile.phases[0].prerequisites[0].condition_type == "port_open"
 
-    progress = PhaseProgress(status=PhaseStatus.IN_PROGRESS, completed_checklists=["web_basic"])
-    assert progress.status == PhaseStatus.IN_PROGRESS
-    assert "web_basic" in progress.completed_checklists
+    progress = PhaseProgress(phase_id="test_phase", phase_status=PhaseStatus.IN_PROGRESS, completed_checks=["web_basic"])
+    assert progress.phase_status == PhaseStatus.IN_PROGRESS
+    assert "web_basic" in progress.completed_checks
 
 def test_profile_loader(tmp_path):
     profiles_dir = tmp_path / "profiles"
