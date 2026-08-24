@@ -52,9 +52,11 @@ from synapse.tui.modals.help_modal import HelpModal
 from synapse.tui.modals.initial_recon_modal import InitialReconModal
 from synapse.tui.modals.runner_modal import RunnerModal
 from synapse.tui.modals.stuck_modal import StuckModal
+from synapse.tui.modals.theme_modal import ThemeModal
 from synapse.tui.modals.triage_modal import TriageModal
 from synapse.tui.theme import (
     BACKGROUND,
+    CLAUDISH_THEME,
     ERROR_RED,
     KRAFT,
     MUTED,
@@ -223,6 +225,8 @@ class SynapseTUI(App):
         Binding("e", "add_evidence", "Add Flag/Evidence", priority=False),
         Binding("space", "toggle_status", "Toggle Status", priority=False),
         Binding("x", "export_report", "Export Report", priority=False),
+        Binding("T", "select_theme", "Themes (T)", priority=False),
+        Binding("ctrl+t", "select_theme", "Themes", show=False),
         Binding("question_mark", "show_help", "Help (?)", priority=False),
         Binding("f1", "show_help", "Help (F1)", priority=False, show=False),
         Binding("1", "switch_tab('tab-workbench')", "Workbench", show=False),
@@ -235,8 +239,17 @@ class SynapseTUI(App):
 
     def __init__(self, db_path: str | Path = ":memory:", repo: Optional[DatabaseRepository] = None, **kwargs):
         super().__init__(**kwargs)
+        # Unregister unwanted default themes (like dracula, light themes)
+        for unwanted in ("dracula", "textual-light", "ansi-light", "solarized-light", "atom-one-light", "catppuccin-latte", "rose-pine-dawn"):
+            try:
+                self.unregister_theme(unwanted)
+            except Exception:
+                pass
+
+        # Register Claudish & Synapse themes
+        self.register_theme(CLAUDISH_THEME)
         self.register_theme(SYNAPSE_THEME)
-        self.theme = "synapse"
+        self.theme = "claudish"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
         self.selected_target: Optional[Target] = None
@@ -984,15 +997,27 @@ class SynapseTUI(App):
             return
         self.call_from_thread(self.notify, message, title="Export Success")
 
-    def action_export_report(self) -> None:
+        self.push_screen(ExportModal(), on_result)
+
+    def action_select_theme(self) -> None:
+        """Open the interactive theme switcher modal."""
         if isinstance(self.screen, ModalScreen):
             return
 
-        def on_result(res: Optional[dict]) -> None:
-            if not res:
-                return
-            fmt = res["format"]
-            out_path = Path(res["output_path"]).expanduser().resolve()
-            self._run_export_worker(fmt, out_path)
+        def _apply_theme(chosen: Optional[str]) -> None:
+            if chosen and chosen in self.available_themes:
+                self.theme = chosen
+                self.notify(f"Color scheme active: {chosen.title()}", title="Theme Changed", timeout=3.0)
+                self.update_stats_banner()
+                self.refresh_active_view()
 
-        self.push_screen(ExportModal(), on_result)
+        self.push_screen(ThemeModal(current_theme=self.theme), _apply_theme)
+
+    def watch_theme(self, old_theme: str, new_theme: str) -> None:
+        """Called automatically by Textual whenever app.theme changes."""
+        try:
+            self.update_stats_banner()
+            self.refresh_active_view()
+        except Exception:
+            pass
+

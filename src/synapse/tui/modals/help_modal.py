@@ -82,6 +82,7 @@ class HelpModal(SynapseModal[None]):
             ("l", "Record new attack lead / hypothesis"),
             ("e", "Capture proof flag / evidence with OffSec validation"),
             ("x", "Export report (Notion, Markdown, Obsidian, JSON)"),
+            ("T", "Open Theme Switcher modal (Claudish, Tokyo Night, Nord, etc.)"),
             ("? / F1", "Open this help screen"),
             ("q", "Quit Synapse"),
         ]

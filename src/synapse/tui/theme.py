@@ -27,6 +27,26 @@ ERROR_RED = "#C4553B"
 
 from textual.theme import Theme
 
+CLAUDISH_THEME = Theme(
+    name="claudish",
+    primary=TERRACOTTA,
+    secondary=KRAFT,
+    accent=SAGE,
+    foreground=CREAM,
+    background=BACKGROUND,
+    surface=SURFACE,
+    panel=SURFACE_RAISED,
+    warning=KRAFT,
+    error=ERROR_RED,
+    success=SAGE,
+    dark=True,
+    variables={
+        "text-muted": MUTED,
+        "surface-raised": SURFACE_RAISED,
+        "block-cursor-background": TERRACOTTA,
+    },
+)
+
 SYNAPSE_THEME = Theme(
     name="synapse",
     primary=TERRACOTTA,

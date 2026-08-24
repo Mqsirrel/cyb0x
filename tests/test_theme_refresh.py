@@ -12,7 +12,9 @@ async def test_theme_activation_and_palette_variables():
 
     app = SynapseTUI(db_path=":memory:")
     async with app.run_test() as pilot:
-        assert app.theme == "synapse"
+        assert app.theme in ("claudish", "synapse")
+        assert "dracula" not in app.available_themes
+        assert "claudish" in app.available_themes
         assert str(app.current_theme.primary).lower() == TERRACOTTA.lower()
         assert app.current_theme.background == BACKGROUND
         assert app.current_theme.surface == SURFACE
@@ -200,3 +202,29 @@ async def test_runner_modal_run_flow_and_save_contract():
         res = captured[0]
         assert res["action"] == "save_evidence"
         assert "CTF{flow}" in res["output"]
+
+
+@pytest.mark.asyncio
+async def test_theme_modal_switcher():
+    from synapse.tui.app import SynapseTUI
+    from synapse.tui.modals.theme_modal import ThemeModal
+
+    app = SynapseTUI(db_path=":memory:")
+    async with app.run_test(size=(120, 36)) as pilot:
+        await pilot.press("T")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, ThemeModal)
+
+        # Select tokyo-night
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.theme == "tokyo-night"
+
+        # Switch back to claudish
+        await pilot.press("T")
+        await pilot.pause(0.1)
+        await pilot.press("up")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.theme == "claudish"
