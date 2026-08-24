@@ -107,7 +107,7 @@ class RunnerModal(SynapseModal[dict]):
     OutputArea {
         height: 1fr;
         min-height: 8;
-        border: round $surface-raised;
+        border: round $panel;
     }
     #cmd-input {
         margin-top: 1;

@@ -175,7 +175,7 @@ SynapseModal {
     max-height: 92%;
     padding: 0 1 1 1;
     background: $surface;
-    border: round $surface-raised;
+    border: round $panel;
     border-title-color: $primary;
     border-title-style: bold;
 }

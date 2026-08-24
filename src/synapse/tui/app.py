@@ -92,14 +92,14 @@ class SynapseTUI(App):
         background: #191715;
         color: $foreground;
         padding: 0 1;
-        border-bottom: solid $surface-raised;
+        border-bottom: solid $panel;
     }
     #main-container {
         height: 1fr;
     }
     #sidebar-pane {
         width: 32%;
-        border-right: solid $surface-raised;
+        border-right: solid $panel;
         height: 100%;
     }
     #content-pane {
@@ -130,7 +130,7 @@ class SynapseTUI(App):
     }
     Tabs {
         background: #191715;
-        border-bottom: solid $surface-raised;
+        border-bottom: solid $panel;
         height: 3;
     }
     Tab {
@@ -160,13 +160,13 @@ class SynapseTUI(App):
     DataTable {
         height: 1fr;
         background: transparent;
-        border: round $surface-raised;
+        border: round $panel;
     }
     DataTable > .datatable--header {
         background: #191715;
         color: #8c8273;
         text-style: bold;
-        border-bottom: solid $surface-raised;
+        border-bottom: solid $panel;
     }
     DataTable > .datatable--cursor {
         background: #332b24;
@@ -188,7 +188,7 @@ class SynapseTUI(App):
         padding: 1;
         background: #26221e;
         margin-bottom: 1;
-        border: round $surface-raised;
+        border: round $panel;
     }
     #checklist-title {
         margin-top: 1;
