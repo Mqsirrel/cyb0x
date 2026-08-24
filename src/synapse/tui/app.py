@@ -38,7 +38,6 @@ from synapse.models import (
     LeadStatus,
     ProofType,
     Service,
-    ServiceStatus,
     Target,
     TargetStatus,
 )
@@ -70,6 +69,13 @@ from synapse.tui.widgets.lead_board import LeadBoardWidget
 from synapse.tui.widgets.pivot_view import PivotViewWidget
 from synapse.tui.widgets.service_detail import ServiceDetailWidget
 from synapse.tui.widgets.target_tree import TargetTreeWidget
+
+
+from textual.theme import BUILTIN_THEMES
+
+# Eradicate dracula and light themes globally from Textual's built-in theme registry
+for _unwanted in ("dracula", "textual-light", "ansi-light", "solarized-light", "atom-one-light", "catppuccin-latte", "rose-pine-dawn"):
+    BUILTIN_THEMES.pop(_unwanted, None)
 
 
 class SynapseTUI(App):
@@ -741,29 +747,14 @@ class SynapseTUI(App):
     def _refresh_service_state(self, service: Optional[Service]) -> Service:
         """Derives service status from its checklist state machine.
 
-        finding -> VULNERABLE, running -> IN_PROGRESS, all dead-end -> DEAD_END,
-        fully resolved -> ENUMERATED. Re-reads the checklist from the repository
-        so callers can pass stale references safely. Returns the fresh model.
+        Delegates to the repository, which owns the transition rules so every
+        surface (TUI, CLI, future callers) shares one state machine. Re-reads
+        the checklist from the repository so stale references are safe.
         """
         if not service or not service.id:
             return service  # type: ignore
-        fresh = self.repo.get_service_by_id(service.id)
-        if not fresh or not fresh.checklists:
-            return fresh or service
-        statuses = {c.status for c in fresh.checklists}
-        if ChecklistStatus.FINDING in statuses:
-            new_status = ServiceStatus.VULNERABLE
-        elif ChecklistStatus.RUNNING in statuses:
-            new_status = ServiceStatus.IN_PROGRESS
-        elif statuses <= {ChecklistStatus.DEAD_END}:
-            new_status = ServiceStatus.DEAD_END
-        elif statuses <= {ChecklistStatus.CHECKED, ChecklistStatus.FINDING, ChecklistStatus.DEAD_END}:
-            new_status = ServiceStatus.ENUMERATED
-        else:
-            return fresh
-        self.repo.update_service_status(fresh.id, new_status)  # type: ignore
-        fresh.status = new_status
-        return fresh
+        fresh = self.repo.refresh_service_state(service.id)
+        return fresh or service
 
     def action_add_cred(self) -> None:
         if isinstance(self.screen, ModalScreen):

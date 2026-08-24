@@ -25,7 +25,9 @@ KRAFT = "#D4A27F"
 SAGE = "#8FA876"
 ERROR_RED = "#C4553B"
 
-from textual.theme import Theme
+from textual.theme import BUILTIN_THEMES, Theme
+
+BUILTIN_THEMES.pop("dracula", None)
 
 CLAUDISH_THEME = Theme(
     name="claudish",
