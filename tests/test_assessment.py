@@ -12,12 +12,16 @@ from synapse.assessment import (
 from synapse.assessment.engine import PRIORITY_EXPLOIT
 from synapse.db.repository import DatabaseRepository
 from synapse.models import (
+    ChecklistItem,
     ChecklistStatus,
     Credential,
     CredentialType,
     Lead,
     LeadPriority,
+    LeadStatus,
+    Service,
     ServiceStatus,
+    Target,
     TargetStatus,
 )
 
@@ -554,3 +558,244 @@ def test_scenario8b_out_of_scope_host_never_leaks_into_any_action_kind():
     )
     for line in leaked:
         assert "10.9.9.9" not in line
+
+
+# ---------------------------------------------------------------------------
+# Adversarial states (loophole regressions: engine must be hard to fool)
+# ---------------------------------------------------------------------------
+
+def _seed_disproven_service(repo, ip, port=3306, name="mysql"):
+    """Service whose cached status is UNTESTED but whose only methodology
+    check already came back DEAD_END (caller skipped refresh_service_state)."""
+    t = repo.add_or_get_target(ip)
+    svc = repo.add_or_update_service(t.id, port, "tcp", name)  # stale UNTESTED cache
+    chk = repo.add_checklist_item(svc.id, title="default creds")
+    repo.update_checklist_status(chk.id, ChecklistStatus.DEAD_END)
+    return t
+
+
+def test_adversary1_stale_cache_must_not_resurrect_disproven_port():
+    """A disproven surface behind a stale UNTESTED status is not enum work."""
+    repo = _seed_repo()
+    _seed_disproven_service(repo, "10.10.20.1")
+
+    actions = get_next_actions(repo.list_targets())
+    assert not [a for a in actions if a.kind == "enum"], (
+        "checklist DEAD_END outranks the cached service status — no re-enum"
+    )
+
+
+def test_adversary1b_fully_disproven_host_is_a_rabbit_hole():
+    """The same stale cache must not fake 'open surface' in the stuck report."""
+    repo = _seed_repo()
+    _seed_disproven_service(repo, "10.10.20.2")
+
+    report = detect_rabbit_holes(repo.list_targets())
+    assert report.dead_end_checks, "the disproven check is the dead-end evidence"
+    assert not report.untested_ports, "disproven port must not count as untouched"
+    assert report.is_stuck, "everything tried and disproven -> genuinely stuck"
+
+
+def test_adversary2_disproven_credential_is_not_an_escape_route():
+    """A cred rejected on every host it was tried on must not block or pollute
+    the stuck verdict, matching the spray gating in get_next_actions."""
+    repo = _seed_repo()
+    t1 = repo.add_or_get_target("10.10.21.1")
+    svc = repo.add_or_update_service(t1.id, 445, "tcp", "microsoft-ds")
+    chk = repo.add_checklist_item(svc.id, title="null session")
+    repo.update_checklist_status(chk.id, ChecklistStatus.DEAD_END)
+    repo.refresh_service_state(svc.id)
+
+    bad_cred = repo.add_credential("bob", "wrongpw", target_id=t1.id)
+    repo.record_credential_test(bad_cred.id, "10.10.21.1", valid=False)
+
+    # While another host still has open surface the report stays honest...
+    t2 = repo.add_or_get_target("10.10.21.2")
+    svc2 = repo.add_or_update_service(t2.id, 22, "tcp", "ssh")
+    banner = repo.add_checklist_item(svc2.id, title="banner grab")
+    report = detect_rabbit_holes(repo.list_targets(), repo.list_credentials())
+    assert not report.unsprayed_credentials, "rejected cred is not an untried asset"
+
+    # ...and once that surface closes, the invalid cred cannot mask 'stuck'.
+    repo.update_checklist_status(banner.id, ChecklistStatus.CHECKED)
+    repo.refresh_service_state(svc2.id)
+    report2 = detect_rabbit_holes(repo.list_targets(), repo.list_credentials())
+    assert report2.is_stuck
+
+
+def test_adversary3_oos_hint_does_not_mask_genuine_stuck_verdict():
+    """Housekeeping suggestions are not attack surface: all-dead-end work plus
+    an out-of-scope target is still a rabbit hole."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.22.1")
+    svc = repo.add_or_update_service(t.id, 21, "tcp", "ftp")
+    chk = repo.add_checklist_item(svc.id, title="anon ftp")
+    repo.update_checklist_status(chk.id, ChecklistStatus.DEAD_END)
+    repo.refresh_service_state(svc.id)
+
+    oos = repo.add_or_get_target("10.10.22.99")
+    repo.set_target_scope(oos.id, False)
+
+    report = detect_rabbit_holes(repo.list_targets())
+    assert any(s.kind == "cleanup" for s in report.suggestions), "scope hint still offered"
+    assert report.is_stuck, "cleanup hint must not impersonate open attack surface"
+
+
+def test_adversary4_duplicate_target_rows_cannot_resurrect_recon():
+    """Hand-built model lists may carry one IP twice; known services win and
+    recon is neither phantom-recommended nor duplicated."""
+    served = Target(
+        id=1,
+        ip="10.10.23.1",
+        services=[
+            Service(
+                id=1,
+                target_id=1,
+                port=80,
+                name="http",
+                checklists=[ChecklistItem(id=1, service_id=1, title="dirb sweep")],
+            )
+        ],
+    )
+    bare_twin = Target(id=2, ip="10.10.23.1")
+
+    actions = get_next_actions([served, bare_twin])
+    assert not [a for a in actions if a.kind == "recon"], (
+        "recon already completed: services are known, duplicates must not undo it"
+    )
+    assert [a.kind for a in actions] == ["enum"]
+
+
+def test_adversary5_all_five_check_statuses_on_one_host_yield_clean_plan():
+    """TODO/RUNNING/CHECKED/FINDING/DEAD_END mixed: exactly exploit + enum +
+    resume, with the finding ranked first and no todo-backlog competition."""
+    repo = _seed_repo()
+    t = repo.add_or_get_target("10.10.24.1")
+    vuln = repo.add_or_update_service(t.id, 80, "tcp", "http")
+    repo.add_checklist_item(vuln.id, title="header audit", status=ChecklistStatus.CHECKED)
+    repo.add_checklist_item(vuln.id, title="shellshock cgi", status=ChecklistStatus.FINDING)
+    repo.add_checklist_item(vuln.id, title="old cgi probe", status=ChecklistStatus.DEAD_END)
+    running = repo.add_checklist_item(vuln.id, title="nikto long scan")
+    repo.update_checklist_status(running.id, ChecklistStatus.RUNNING)
+    fresh = repo.add_or_update_service(t.id, 443, "tcp", "https")
+    repo.add_checklist_item(fresh.id, title="cipher sweep")  # TODO
+
+    actions = get_next_actions(repo.list_targets())
+    kinds = [a.kind for a in actions]
+    assert sorted(kinds) == ["enum", "exploit", "resume"]
+    assert kinds.index("exploit") < kinds.index("enum"), "confirmed finding first"
+    exploit = next(a for a in actions if a.kind == "exploit")
+    assert exploit.port == 80 and "shellshock cgi" in exploit.title
+    resume = next(a for a in actions if a.kind == "resume")
+    assert "nikto long scan" in resume.title, "interrupted check wins over todo backlog"
+    assert not any("Work through" in a.title for a in actions)
+
+
+def test_adversary6_invalid_creds_invisible_valid_cred_still_drives_spray():
+    repo = _seed_repo()
+    w = repo.add_or_get_target("10.10.25.1")
+    wsvc = repo.add_or_update_service(w.id, 22, "tcp", "ssh")
+    repo.add_checklist_item(wsvc.id, title="banner")
+    v = repo.add_or_get_target("10.10.25.2")
+    vsvc = repo.add_or_update_service(v.id, 22, "tcp", "ssh")
+    repo.add_checklist_item(vsvc.id, title="banner")
+
+    bad = repo.add_credential("guest", "guest", target_id=w.id)
+    repo.record_credential_test(bad.id, "10.10.25.1", valid=False, admin=False)
+    good = repo.add_credential("root", "toor", target_id=v.id)
+    repo.record_credential_test(good.id, "10.10.25.2", valid=True, admin=True)
+
+    actions = get_next_actions(repo.list_targets(), repo.list_credentials())
+    blob = " ".join(a.title + a.rationale for a in actions)
+    assert "guest" not in blob, "invalid credential must be invisible to planning"
+    sprays = [a for a in actions if a.kind == "spray"]
+    assert sprays and "10.10.25.1" in sprays[0].title, "valid cred still sprays"
+    exploits = [a for a in actions if a.kind == "exploit" and a.port is None]
+    assert exploits and "root" in exploits[0].title
+
+
+def test_adversary7_scope_sweep_running_and_recon_bait_hosts():
+    """Out-of-scope AND ignored hosts stay silent even when carrying RUNNING
+    checks, FINDINGS, admin-valid creds, or zero services (recon bait)."""
+    repo = _seed_repo()
+    live = repo.add_or_get_target("10.10.26.1")
+    lsvc = repo.add_or_update_service(live.id, 80, "tcp", "http")
+    repo.add_checklist_item(lsvc.id, title="rce probe", status=ChecklistStatus.FINDING)
+
+    hidden_ips = ["10.10.26.50", "10.10.26.60"]
+    for ip in hidden_ips:
+        status = TargetStatus.IGNORED if ip.endswith("60") else TargetStatus.DISCOVERED
+        hidden = repo.add_or_get_target(ip, status=status)
+        hsvc = repo.add_or_update_service(hidden.id, 22, "tcp", "ssh")
+        run = repo.add_checklist_item(hsvc.id, title="leak-run")
+        repo.update_checklist_status(run.id, ChecklistStatus.RUNNING)
+        fnd = repo.add_checklist_item(hsvc.id, title="leak-finding")
+        repo.update_checklist_status(fnd.id, ChecklistStatus.FINDING)
+        hc = repo.add_credential("leak", "leak", target_id=hidden.id)
+        repo.record_credential_test(hc.id, ip, valid=True, admin=True)
+        if ip.endswith("50"):
+            repo.set_target_scope(hidden.id, False)
+
+    targets, creds = repo.list_targets(), repo.list_credentials()
+    actions = get_next_actions(targets, creds)
+    for a in actions:
+        assert a.target_ip not in hidden_ips, f"{a.kind} leaked {a.target_ip}"
+    # A cred harvested on a hidden host stays a valid asset, but sprays may
+    # only ever name live hosts.
+    for a in (a for a in actions if a.kind == "spray"):
+        for ip in hidden_ips:
+            assert ip not in a.title and ip not in a.rationale
+
+    report = detect_rabbit_holes(targets, creds)
+    leaked = (
+        report.dead_end_services
+        + report.dead_end_checks
+        + report.running_checks
+        + report.untested_ports
+        + report.unsprayed_credentials
+        + [f"{s.title} {s.rationale}" for s in report.suggestions]
+    )
+    for line in leaked:
+        for ip in hidden_ips:
+            assert ip not in line, f"rabbit-hole report leaked {ip}: {line}"
+
+
+def test_adversary8_lead_lifecycle_gates_staleness_nag():
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=9)
+    leads = [
+        Lead(id=1, title="stale backlog lead", created_at=old, updated_at=now),
+        Lead(id=2, title="confirmed old", status=LeadStatus.CONFIRMED, created_at=old, updated_at=now),
+        Lead(id=3, title="rejected old", status=LeadStatus.REJECTED, created_at=old, updated_at=now),
+        Lead(id=4, title="in-progress old", status=LeadStatus.IN_PROGRESS, created_at=old, updated_at=now),
+        Lead(id=5, title="future backlog", created_at=now + timedelta(days=9), updated_at=now),
+    ]
+    repo = _seed_repo()
+    repo.add_or_get_target("10.10.27.1")
+
+    actions = get_next_actions(repo.list_targets(), [], leads)
+    cleanups = [a.title for a in actions if a.kind == "cleanup"]
+    assert len(cleanups) == 1 and "#1" in cleanups[0], cleanups
+
+
+def test_adversary9_partial_exploitation_retires_owned_host_only():
+    """FOOTHOLD retires its own finding nag; sibling findings and interrupted
+    post-exploit work survive."""
+    repo = _seed_repo()
+    owned = repo.add_or_get_target("10.10.28.1", status=TargetStatus.FOOTHOLD)
+    osvc = repo.add_or_update_service(owned.id, 80, "tcp", "http")
+    orun = repo.add_checklist_item(osvc.id, title="post-exploit enum")
+    repo.update_checklist_status(orun.id, ChecklistStatus.RUNNING)
+    ofind = repo.add_checklist_item(osvc.id, title="owned rce")
+    repo.update_checklist_status(ofind.id, ChecklistStatus.FINDING)
+
+    sibling = repo.add_or_get_target("10.10.28.2")
+    ssvc = repo.add_or_update_service(sibling.id, 445, "tcp", "microsoft-ds")
+    repo.add_checklist_item(ssvc.id, title="eternal blue", status=ChecklistStatus.FINDING)
+
+    actions = get_next_actions(repo.list_targets())
+    exploits = [(a.target_ip, a.port) for a in actions if a.kind == "exploit"]
+    assert exploits == [("10.10.28.2", 445)], "owned host retired, sibling surfaced"
+    assert any(
+        a.kind == "resume" and a.target_ip == "10.10.28.1" for a in actions
+    ), "interrupted post-exploit work still resumable"

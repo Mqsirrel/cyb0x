@@ -51,6 +51,43 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _unique_by_ip(targets: List[Target]) -> List[Target]:
+    """Collapses duplicate target rows for the same IP (first occurrence wins).
+
+    Hand-built model lists can carry the same host twice; without this, a bare
+    duplicate masks the known services of its twin and recon is re-recommended
+    for an already-scanned host.
+    """
+    seen: set = set()
+    unique: List[Target] = []
+    for t in targets:
+        if t.ip in seen:
+            continue
+        seen.add(t.ip)
+        unique.append(t)
+    return unique
+
+
+def _disproven_service(svc: Service) -> bool:
+    """True when every methodology check on the service came back DEAD_END.
+
+    Checklist state outranks ``Service.status`` (a derived cache callers may
+    not have refreshed): a service whose checks all dead-ended must never be
+    treated as untouched attack surface, whatever its cached status says.
+    """
+    return bool(svc.checklists) and all(
+        c.status == ChecklistStatus.DEAD_END for c in svc.checklists
+    )
+
+
+def _cred_valid_somewhere(cred: Credential) -> bool:
+    """True if any recorded test of this credential succeeded."""
+    return any(
+        isinstance(data, dict) and data.get("valid")
+        for data in cred.tested_targets.values()
+    )
+
+
 @dataclass
 class TargetSnapshot:
     """Aggregated per-host state: what is known vs unknown vs tested."""
@@ -142,15 +179,19 @@ class StuckReport:
 
     @property
     def is_stuck(self) -> bool:
-        """Stuck means: activity exists but nothing actionable is left open."""
+        """Stuck means: activity exists but nothing actionable is left open.
+
+        Housekeeping hints (kind == "cleanup", e.g. the out-of-scope reminder)
+        are not attack surface and must not mask a genuine stuck verdict.
+        """
         has_activity = bool(self.dead_end_services or self.dead_end_checks)
-        no_open_surface = not (
+        open_surface = (
             self.untested_ports
             or self.unsprayed_credentials
             or self.running_checks
-            or self.suggestions
+            or [a for a in self.suggestions if a.kind != "cleanup"]
         )
-        return has_activity and no_open_surface
+        return has_activity and not open_surface
 
 
 def build_snapshots(targets: List[Target], evidence_by_target: Optional[Dict[int, int]] = None,
@@ -228,8 +269,10 @@ def get_next_actions(
     leads = leads or []
     actions: List[NextAction] = []
 
-    live_targets = [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
-    snapshots = build_snapshots(targets)
+    live_targets = _unique_by_ip(
+        [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
+    )
+    snapshots = build_snapshots(live_targets)
 
     # 1. Bare targets: phase-0 recon is always the first move.
     for t in live_targets:
@@ -292,7 +335,11 @@ def get_next_actions(
         snap = snapshots[t.ip]
         if snap.is_bare:
             continue
-        pending = sorted(s.port for s in t.services if s.status == ServiceStatus.UNTESTED)
+        pending = sorted(
+            s.port
+            for s in t.services
+            if s.status == ServiceStatus.UNTESTED and not _disproven_service(s)
+        )
         todo_checks = sum(1 for s in t.services for c in s.checklists if c.status == ChecklistStatus.TODO)
         if pending:
             port_str = ",".join(str(p) for p in pending[:6]) + ("…" if len(pending) > 6 else "")
@@ -318,10 +365,7 @@ def get_next_actions(
 
     # 4. Credential spraying gaps: valid creds never attempted elsewhere.
     for cred in credentials:
-        already_valid = any(
-            isinstance(d, dict) and d.get("valid") for d in cred.tested_targets.values()
-        )
-        if not already_valid:
+        if not _cred_valid_somewhere(cred):
             continue
         untested = unsprayed_hosts_for_credential(cred, live_targets)
         if untested:
@@ -408,7 +452,9 @@ def detect_rabbit_holes(
     leads = leads or []
     report = StuckReport()
 
-    live_targets = [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
+    live_targets = _unique_by_ip(
+        [t for t in targets if t.in_scope and t.status != TargetStatus.IGNORED]
+    )
     oos_count = len(targets) - len(live_targets)
 
     for t in live_targets:
@@ -416,7 +462,7 @@ def detect_rabbit_holes(
             svc_tag = f"{t.ip}:{svc.port}/{svc.protocol} ({svc.name})"
             if svc.status == ServiceStatus.DEAD_END:
                 report.dead_end_services.append(svc_tag)
-            elif svc.status == ServiceStatus.UNTESTED:
+            elif svc.status == ServiceStatus.UNTESTED and not _disproven_service(svc):
                 report.untested_ports.append(svc_tag)
 
             for chk in svc.checklists:
@@ -433,6 +479,10 @@ def detect_rabbit_holes(
             report.stale_leads.append(f"#{lead.id} {lead.title[:60]}")
 
     for cred in credentials:
+        # A credential disproven everywhere it was tried is not an escape
+        # route — mirror the spray gating in get_next_actions.
+        if cred.tested_targets and not _cred_valid_somewhere(cred):
+            continue
         untested = unsprayed_hosts_for_credential(cred, live_targets)
         if untested:
             preview = ", ".join(untested[:4]) + ("…" if len(untested) > 4 else "")
