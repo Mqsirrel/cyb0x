@@ -31,21 +31,27 @@ class InitialReconModal(SynapseModal[dict]):
 
     DEFAULT_CSS = """
     InitialReconModal #dialog {
-        width: 96;
+        width: 88%;
+        max-width: 96;
         height: auto;
         max-height: 85%;
     }
+    InitialReconModal #modal-body {
+        height: 1fr;
+    }
     #recon-scroll {
-        height: auto;
+        height: 1fr;
         max-height: 100%;
         margin-top: 1;
+        overflow-y: auto;
     }
     #recon-hint {
         color: $text-muted;
     }
     #recon-table {
-        height: auto;
-        min-height: 8;
+        height: 1fr;
+        min-height: 6;
+        max-height: 12;
         margin-top: 1;
     }
     """

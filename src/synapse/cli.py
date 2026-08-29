@@ -597,5 +597,172 @@ def export_report(ctx: click.Context, fmt: str, output: str) -> None:
         console.print(f"[bold green]✔ Workspace JSON backup saved to: {out_path}[/bold green]")
 
 
+@main.command(name="doctor")
+@click.pass_context
+def doctor_cmd(ctx: click.Context) -> None:
+    """Check environment readiness, SQLite capabilities, and external pentest tooling."""
+    import os
+    import platform
+    import shutil
+    import sqlite3
+
+    table = Table(title="SYNAPSE Doctor // Environment & Tool Diagnostics", border_style="cyan")
+    table.add_column("Category", style="bold cyan")
+    table.add_column("Component / Tool", style="bold white")
+    table.add_column("Status", style="bold")
+    table.add_column("Details", style="white")
+
+    # 1. Python & System
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    py_ok = sys.version_info >= (3, 10)
+    table.add_row(
+        "Core Runtime",
+        "Python Interpreter",
+        "[green]✔ PASS[/green]" if py_ok else "[red]✖ FAIL[/red]",
+        f"v{py_ver} ({platform.system()} {platform.machine()})",
+    )
+
+    # 2. Storage
+    base_ws = Path.home() / ".synapse" / "workspaces"
+    base_ws.mkdir(parents=True, exist_ok=True)
+    ws_writable = os.access(base_ws, os.W_OK)
+    table.add_row(
+        "Storage",
+        "Workspace Directory",
+        "[green]✔ WRITABLE[/green]" if ws_writable else "[red]✖ READ-ONLY[/red]",
+        str(base_ws),
+    )
+
+    sqlite_ver = sqlite3.sqlite_version
+    table.add_row(
+        "Storage",
+        "SQLite Engine (WAL)",
+        "[green]✔ ACTIVE[/green]",
+        f"SQLite v{sqlite_ver}",
+    )
+
+    # 3. Security Tooling
+    tool_matrix = [
+        ("Recon & Port Scanning", [
+            ("nmap", "Network Mapper & NSE Engine (Essential)"),
+            ("rustscan", "High-speed port scanner"),
+            ("masscan", "Large-scale asynchronous port scanner"),
+        ]),
+        ("Web Enumeration", [
+            ("ffuf", "Fast Web Fuzzer"),
+            ("gobuster", "Directory / DNS / VHost Fuzzer"),
+            ("feroxbuster", "Recursive content discovery"),
+            ("nikto", "Web server vulnerability scanner"),
+            ("whatweb", "Web technology fingerprinting"),
+            ("sqlmap", "Automated SQL injection tool"),
+            ("curl", "HTTP command line utility"),
+        ]),
+        ("Active Directory & SMB", [
+            ("netexec", "Network execution tool (NetExec/NXC)"),
+            ("nxc", "NetExec shortcut"),
+            ("crackmapexec", "CrackMapExec suite"),
+            ("smbclient", "SMB/CIFS client"),
+            ("enum4linux-ng", "Next-gen SMB enumeration"),
+            ("rpcclient", "MSRPC client utility"),
+        ]),
+        ("Authentication & Passwords", [
+            ("hydra", "Network logon cracker"),
+            ("john", "John the Ripper password cracker"),
+            ("hashcat", "GPU/CPU hash cracker"),
+        ]),
+        ("Pivoting & Tunnels", [
+            ("ligolo-ng", "Modern tunnel interface"),
+            ("chisel", "TCP/UDP tunnel over HTTP"),
+            ("proxychains4", "Dynamic SOCKS proxy chaining"),
+            ("proxychains", "Proxy chaining utility"),
+        ]),
+    ]
+
+    for category, tools in tool_matrix:
+        for bin_name, desc in tools:
+            found = shutil.which(bin_name)
+            status = "[green]✔ INSTALLED[/green]" if found else "[dim]✖ NOT FOUND[/dim]"
+            path_str = found if found else f"[dim]{desc}[/dim]"
+            table.add_row(category, bin_name, status, path_str)
+
+    console.print(table)
+
+
+@main.command(name="list-workspaces")
+def list_workspaces() -> None:
+    """List all available Synapse workspace databases."""
+    from datetime import datetime
+
+    base = Path.home() / ".synapse" / "workspaces"
+    if not base.exists():
+        console.print("[dim]No workspaces found in ~/.synapse/workspaces/[/dim]")
+        return
+
+    db_files = sorted(base.glob("*.db"))
+    if not db_files:
+        console.print("[dim]No workspaces found in ~/.synapse/workspaces/[/dim]")
+        return
+
+    table = Table(title="Synapse Assessment Workspaces", border_style="cyan")
+    table.add_column("Workspace Name", style="bold cyan")
+    table.add_column("Size", style="yellow")
+    table.add_column("Targets", style="green")
+    table.add_column("Findings", style="red")
+    table.add_column("Flags", style="magenta")
+    table.add_column("Last Modified", style="white")
+
+    for db_path in db_files:
+        name = db_path.stem
+        size_kb = db_path.stat().st_size / 1024
+        mtime = datetime.fromtimestamp(db_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        try:
+            r = DatabaseRepository(db_path)
+            stats = r.get_stats()
+            r.close()
+            table.add_row(
+                name,
+                f"{size_kb:.1f} KB",
+                str(stats["total_targets"]),
+                str(stats["total_findings"]),
+                str(stats["captured_flags"]),
+                mtime,
+            )
+        except Exception:
+            table.add_row(name, f"{size_kb:.1f} KB", "-", "-", "-", mtime)
+
+    console.print(table)
+
+
+@main.command(name="list-commands")
+@click.option("--limit", "-n", default=25, help="Number of commands to display")
+@click.pass_context
+def list_commands_cmd(ctx: click.Context, limit: int) -> None:
+    """List command execution history for the current workspace."""
+    repo: DatabaseRepository = ctx.obj["repo"]
+    cmds = repo.list_commands(limit=limit)
+
+    if not cmds:
+        console.print("[dim]No commands recorded in execution history yet.[/dim]")
+        return
+
+    table = Table(title=f"Command Execution History [Workspace: {ctx.obj['workspace']}]", border_style="cyan")
+    table.add_column("Time", style="white")
+    table.add_column("Target", style="cyan")
+    table.add_column("Exit", style="bold")
+    table.add_column("Duration", style="yellow")
+    table.add_column("Command", style="bold white")
+
+    for c in cmds:
+        time_str = c.created_at.strftime("%H:%M:%S")
+        exit_str = "[green]0[/green]" if c.return_code == 0 else f"[red]{c.return_code}[/red]"
+        dur_str = f"{c.duration_seconds:.2f}s"
+        tgt_str = c.target_ip or "-"
+        cmd_disp = c.command if len(c.command) <= 60 else c.command[:57] + "..."
+        table.add_row(time_str, tgt_str, exit_str, dur_str, cmd_disp)
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     main()
+

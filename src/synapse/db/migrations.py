@@ -6,7 +6,7 @@ import sqlite3
 from typing import Set
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -79,9 +79,34 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             cur.execute("ALTER TABLE evidence ADD COLUMN checklist_id INTEGER REFERENCES checklists(id) ON DELETE SET NULL;")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_evidence_checklist ON evidence(checklist_id);")
 
-    # 5. Set version in metadata
+    # 5. Commands table migration (v4)
+    if not table_exists(conn, "commands"):
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id INTEGER,
+            service_id INTEGER,
+            checklist_id INTEGER,
+            command TEXT NOT NULL,
+            return_code INTEGER DEFAULT 0,
+            stdout TEXT DEFAULT '',
+            stderr TEXT DEFAULT '',
+            duration_seconds REAL DEFAULT 0.0,
+            extracted_flags TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
+            FOREIGN KEY(checklist_id) REFERENCES checklists(id) ON DELETE SET NULL
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_target ON commands(target_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_service ON commands(service_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_commands_created ON commands(created_at);")
+
+    # 6. Set version in metadata
     cur.execute(
         "INSERT INTO metadata (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value=?;",
         (str(CURRENT_SCHEMA_VERSION), str(CURRENT_SCHEMA_VERSION)),
     )
     conn.commit()
+

@@ -26,6 +26,7 @@ from synapse.db.schema import INDEXES_SQL, SCHEMA_SQL
 from synapse.models import (
     ChecklistItem,
     ChecklistStatus,
+    CommandRecord,
     Credential,
     CredentialType,
     Evidence,
@@ -1092,3 +1093,132 @@ class DatabaseRepository:
             status=row["status"] or "active",
             created_at=_parse_dt(row["created_at"]),
         )
+
+    def log_command(
+        self,
+        command: str,
+        return_code: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        duration_seconds: float = 0.0,
+        extracted_flags: Optional[List[str]] = None,
+        target_id: Optional[int] = None,
+        service_id: Optional[int] = None,
+        checklist_id: Optional[int] = None,
+    ) -> CommandRecord:
+        """Logs an executed command and its output into persistent execution history."""
+        extracted_flags = extracted_flags or []
+        flags_json = json.dumps(extracted_flags)
+        with self._lock:
+            with self.transaction():
+                cur = self._conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO commands (target_id, service_id, checklist_id, command, return_code, stdout, stderr, duration_seconds, extracted_flags)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (target_id, service_id, checklist_id, command, return_code, stdout, stderr, duration_seconds, flags_json),
+                )
+                cid = cur.lastrowid
+                now = datetime.now(timezone.utc)
+                target_ip = None
+                if target_id:
+                    cur.execute("SELECT ip FROM targets WHERE id=?;", (target_id,))
+                    trow = cur.fetchone()
+                    if trow:
+                        target_ip = trow["ip"] if isinstance(trow, sqlite3.Row) else trow[0]
+
+        return CommandRecord(
+            id=cid,
+            target_id=target_id,
+            target_ip=target_ip,
+            service_id=service_id,
+            checklist_id=checklist_id,
+            command=command,
+            return_code=return_code,
+            stdout=stdout,
+            stderr=stderr,
+            duration_seconds=duration_seconds,
+            extracted_flags=extracted_flags,
+            created_at=now,
+        )
+
+    def list_commands(
+        self,
+        target_id: Optional[int] = None,
+        service_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> List[CommandRecord]:
+        """Lists executed command history, optionally filtered by target or service."""
+        with self._lock:
+            cur = self._conn.cursor()
+            query = """
+                SELECT c.*, t.ip as target_ip
+                FROM commands c
+                LEFT JOIN targets t ON c.target_id = t.id
+            """
+            params: list = []
+            conditions = []
+            if target_id is not None:
+                conditions.append("c.target_id = ?")
+                params.append(target_id)
+            if service_id is not None:
+                conditions.append("c.service_id = ?")
+                params.append(service_id)
+
+            if conditions:
+                query += " WHERE " + " AND ".join(conditions)
+
+            query += " ORDER BY c.created_at DESC, c.id DESC LIMIT ?;"
+            params.append(limit)
+
+            cur.execute(query, params)
+            return [self._row_to_command(r) for r in cur.fetchall()]
+
+    def get_command_by_id(self, command_id: int) -> Optional[CommandRecord]:
+        """Retrieves a specific command execution record by ID."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(
+                """
+                SELECT c.*, t.ip as target_ip
+                FROM commands c
+                LEFT JOIN targets t ON c.target_id = t.id
+                WHERE c.id = ?;
+                """,
+                (command_id,),
+            )
+            row = cur.fetchone()
+            return self._row_to_command(row) if row else None
+
+    def get_scratchpad(self) -> str:
+        """Retrieves the freeform workspace scratchpad markdown notes."""
+        return self.get_metadata("workspace_scratchpad", "")
+
+    def set_scratchpad(self, content: str) -> None:
+        """Saves the freeform workspace scratchpad markdown notes."""
+        self.set_metadata("workspace_scratchpad", content)
+
+    @staticmethod
+    def _row_to_command(row: sqlite3.Row) -> CommandRecord:
+        flags = []
+        if row["extracted_flags"]:
+            try:
+                flags = json.loads(row["extracted_flags"])
+            except Exception:
+                flags = []
+        return CommandRecord(
+            id=row["id"],
+            target_id=row["target_id"],
+            target_ip=row["target_ip"] if "target_ip" in row.keys() else None,
+            service_id=row["service_id"],
+            checklist_id=row["checklist_id"] if "checklist_id" in row.keys() else None,
+            command=row["command"],
+            return_code=row["return_code"] if row["return_code"] is not None else 0,
+            stdout=row["stdout"] or "",
+            stderr=row["stderr"] or "",
+            duration_seconds=row["duration_seconds"] if row["duration_seconds"] is not None else 0.0,
+            extracted_flags=flags,
+            created_at=_parse_dt(row["created_at"]),
+        )
+

@@ -112,6 +112,23 @@ CREATE TABLE IF NOT EXISTS pivot_routes (
     status TEXT DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS commands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id INTEGER,
+    service_id INTEGER,
+    checklist_id INTEGER,
+    command TEXT NOT NULL,
+    return_code INTEGER DEFAULT 0,
+    stdout TEXT DEFAULT '',
+    stderr TEXT DEFAULT '',
+    duration_seconds REAL DEFAULT 0.0,
+    extracted_flags TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(target_id) REFERENCES targets(id) ON DELETE CASCADE,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
+    FOREIGN KEY(checklist_id) REFERENCES checklists(id) ON DELETE SET NULL
+);
 """
 
 # Indexes are applied after schema migrations so that columns added by
@@ -125,4 +142,8 @@ CREATE INDEX IF NOT EXISTS idx_credentials_username ON credentials(username);
 CREATE INDEX IF NOT EXISTS idx_leads_target ON leads(target_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_created ON evidence(created_at);
 CREATE INDEX IF NOT EXISTS idx_credentials_identity ON credentials(username, secret, domain);
+CREATE INDEX IF NOT EXISTS idx_commands_target ON commands(target_id);
+CREATE INDEX IF NOT EXISTS idx_commands_service ON commands(service_id);
+CREATE INDEX IF NOT EXISTS idx_commands_created ON commands(created_at);
 """
+

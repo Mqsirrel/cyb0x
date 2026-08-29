@@ -16,6 +16,7 @@ from synapse.models import (
 )
 
 BACKGROUND = "#211E1B"
+DARK_CHARCOAL = BACKGROUND
 SURFACE = "#2A2622"
 SURFACE_RAISED = "#332E29"
 TERRACOTTA = "#D97757"
@@ -136,6 +137,20 @@ TARGET_STATUS_GLYPH: dict[TargetStatus, str] = {
     TargetStatus.IGNORED: f"[dim]{MUTED}✖[/dim]",
 }
 
+TARGET_STATUS_CHIP: dict[TargetStatus, str] = {
+    TargetStatus.DISCOVERED: f"[{MUTED}]DISCOVERED[/]",
+    TargetStatus.SCANNING: f"[bold {TERRACOTTA}]SCANNING[/]",
+    TargetStatus.ENUMERATED: f"[bold {SAGE}]ENUMERATED[/]",
+    TargetStatus.FOOTHOLD: f"[bold {KRAFT}]FOOTHOLD[/]",
+    TargetStatus.PWNED: f"[bold {SAGE}]✔ PWNED[/]",
+    TargetStatus.IGNORED: f"[dim {MUTED}]IGNORED[/]",
+}
+
+
+def target_status_chip(status: TargetStatus) -> str:
+    return TARGET_STATUS_CHIP.get(status, f"[{MUTED}]{status.value.upper()}[/]")
+
+
 TRIAGE_CHIP: dict[str, str] = {
     "RECON": f"[bold {BACKGROUND} on {KRAFT}]  RECON  [/]",
     "EXPLOIT": f"[bold {CREAM} on {ERROR_RED}] EXPLOIT [/]",
@@ -212,9 +227,10 @@ SynapseModal {
     align: center middle;
 }
 #dialog {
-    width: auto;
+    width: 88%;
+    max-width: 96;
     height: auto;
-    max-height: 92%;
+    max-height: 85%;
     padding: 0 1 1 1;
     background: $surface;
     border: round $panel;
@@ -226,7 +242,8 @@ SynapseModal {
     margin-top: 1;
 }
 #modal-body {
-    height: auto;
+    height: 1fr;
+    max-height: 100%;
 }
 #action-bar {
     dock: bottom;
@@ -245,8 +262,8 @@ SynapseModal {
     align-horizontal: right;
 }
 #action-buttons Button {
-    margin-left: 2;
-    min-width: 14;
+    margin-left: 1;
+    min-width: 11;
 }
 .field-label {
     margin-top: 1;

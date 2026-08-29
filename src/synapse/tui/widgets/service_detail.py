@@ -8,8 +8,17 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Static
 
-from synapse.models import ChecklistStatus, Service, Target
-from synapse.tui.theme import ERROR_RED, KRAFT, MUTED, TERRACOTTA, checklist_chip, service_status_chip
+from synapse.models import ChecklistStatus, Service, Target, TargetStatus
+from synapse.tui.theme import (
+    ERROR_RED,
+    KRAFT,
+    MUTED,
+    SAGE,
+    TERRACOTTA,
+    checklist_chip,
+    service_status_chip,
+    target_status_chip,
+)
 from synapse.tui.widgets.table_utils import capture_cursor, restore_cursor
 
 
@@ -92,6 +101,75 @@ class ServiceDetailWidget(Vertical):
             )
         restore_cursor(table, prev_cursor)
 
+    def display_target_360(self, target: Target, credentials: list | None = None, evidence: list | None = None) -> None:
+        """Renders the Target 360° unified operational overview card."""
+        self.current_target = target
+        self.current_service = None
+
+        header = self.query_one("#service-header", Static)
+        safe_ip = escape(target.ip)
+        safe_host = f" ({escape(target.hostname)})" if target.hostname else ""
+        header.update(f"[bold {TERRACOTTA}]TARGET 360° OVERVIEW[/] ▸ [bold]{safe_ip}[/bold]{safe_host}")
+
+        info = self.query_one("#service-info", Static)
+        safe_os = escape(target.os or "Unknown")
+        status_tag = target_status_chip(target.status)
+        scope_tag = "" if target.in_scope else f" [bold {ERROR_RED}]⃠ OUT-OF-SCOPE[/]"
+
+        total_svcs = len(target.services)
+        total_checks = sum(len(s.checklists) for s in target.services)
+        done_checks = sum(sum(1 for c in s.checklists if c.status.value in ("checked", "finding", "dead_end")) for s in target.services)
+        findings_count = sum(sum(1 for c in s.checklists if c.status.value == "finding") for s in target.services)
+
+        # Target-linked credentials
+        creds = credentials or []
+        valid_creds = [
+            c.username for c in creds
+            if any(isinstance(d, dict) and d.get("valid") and str(k).split(":")[0] == target.ip for k, d in c.tested_targets.items())
+        ]
+        cred_str = f"[{SAGE}]" + ", ".join(valid_creds[:4]) + f"[/{SAGE}]" if valid_creds else f"[{MUTED}]None confirmed[/{MUTED}]"
+
+        cov_pct = int(round(done_checks / total_checks * 100)) if total_checks else 0
+
+        info_text = (
+            f"[bold]Status:[/bold] {status_tag}{scope_tag} │ [bold]OS:[/bold] {safe_os} │ [bold]Services:[/bold] {total_svcs} │ [bold]Findings:[/bold] [bold {ERROR_RED}]{findings_count}[/]\n"
+            f"[bold]Methodology Coverage:[/bold] {done_checks}/{total_checks} ({cov_pct}%) │ [bold]Valid Access:[/bold] {cred_str}\n"
+            f"[{MUTED}]Target Notes:[/] {escape(target.notes) if target.notes else '[dim]No notes recorded[/dim]'}"
+        )
+        info.update(info_text)
+
+        title_lbl = self.query_one("#checklist-title", Static)
+        table = self.query_one("#checklist-table", DataTable)
+        prev_cursor = capture_cursor(table)
+        table.clear()
+
+        if total_svcs == 0:
+            title_lbl.update(f"[{KRAFT}]Attack Surface Status:[/] No open ports recorded yet.")
+            table.add_row(
+                f"[bold {KRAFT}]UNSCANNED[/]",
+                "-",
+                "Phase 0 Reconnaissance",
+                f"[{TERRACOTTA}]Press 'i' or 'r' to launch Initial Recon on {safe_ip}[/]",
+            )
+            return
+
+        title_lbl.update(f"[{KRAFT}]Discovered Open Ports & Attack Surface (Select service in sidebar to inspect checks):[/]")
+
+        for svc in target.services:
+            st = service_status_chip(svc.status.value)
+            prod_ver = f"{svc.product} {svc.version}".strip() or "-"
+            checks_total = len(svc.checklists)
+            checks_resolved = sum(1 for c in svc.checklists if c.status.value in ("checked", "finding", "dead_end"))
+            cov_str = f"{checks_resolved}/{checks_total}" if checks_total else "0 checks"
+            table.add_row(
+                st,
+                f"{svc.port}/{svc.protocol}",
+                escape(svc.name.upper()),
+                f"[{TERRACOTTA}]{escape(prod_ver)}[/] [dim]({cov_str})[/dim]",
+                key=str(svc.id),
+            )
+        restore_cursor(table, prev_cursor)
+
     def display_empty(self, message: str = "Select a target or service from the left sidebar.") -> None:
         header = self.query_one("#service-header", Static)
         header.update("[bold]Service & Methodology Checklist[/bold]")
@@ -102,3 +180,4 @@ class ServiceDetailWidget(Vertical):
         )
         table = self.query_one("#checklist-table", DataTable)
         table.clear()
+

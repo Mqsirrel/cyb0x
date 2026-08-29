@@ -33,14 +33,19 @@ class StuckModal(SynapseModal[None]):
 
     DEFAULT_CSS = """
     StuckModal #dialog {
-        width: 100;
-        height: 80%;
+        width: 88%;
+        max-width: 96;
+        height: auto;
+        max-height: 85%;
     }
     StuckModal #modal-body {
         height: 1fr;
+        max-height: 100%;
     }
     #stuck-scroll {
         height: 1fr;
+        max-height: 100%;
+        overflow-y: auto;
     }
     .section-title {
         margin-top: 1;

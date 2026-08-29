@@ -20,6 +20,7 @@ from textual.widgets import (
     Tree,
 )
 
+import shutil
 from synapse.assessment import (
     build_snapshots,
     detect_rabbit_holes,
@@ -46,13 +47,17 @@ from synapse.tui.modals.add_cred_modal import AddCredModal
 from synapse.tui.modals.add_evidence_modal import AddEvidenceModal
 from synapse.tui.modals.add_lead_modal import AddLeadModal
 from synapse.tui.modals.add_target_modal import AddTargetModal
+from synapse.tui.modals.command_palette_modal import CommandPaletteModal
 from synapse.tui.modals.export_modal import ExportModal
 from synapse.tui.modals.help_modal import HelpModal
 from synapse.tui.modals.initial_recon_modal import InitialReconModal
+from synapse.tui.modals.jump_modal import JumpModal
 from synapse.tui.modals.runner_modal import RunnerModal
+from synapse.tui.modals.scratchpad_modal import ScratchpadModal
 from synapse.tui.modals.stuck_modal import StuckModal
 from synapse.tui.modals.theme_modal import ThemeModal
 from synapse.tui.modals.triage_modal import TriageModal
+from synapse.tui.modals.workspace_modal import WorkspaceModal
 from synapse.tui.theme import (
     BACKGROUND,
     CLAUDISH_LIGHT_THEME,
@@ -89,16 +94,16 @@ class SynapseTUI(App):
         background: $background;
     }
     Header {
-        background: #191715;
+        background: $surface;
         color: $foreground;
     }
     Footer {
-        background: #191715;
+        background: $surface;
         color: $text-muted;
     }
     #stats-banner {
-        height: 1;
-        background: #191715;
+        height: 2;
+        background: $surface;
         color: $foreground;
         padding: 0 1;
         border-bottom: solid $panel;
@@ -124,12 +129,12 @@ class SynapseTUI(App):
         padding: 0 1;
     }
     Tree:focus .tree--cursor {
-        background: #383028;
+        background: $panel;
         color: $foreground;
         text-style: bold;
     }
     .tree--cursor {
-        background: #2a2520;
+        background: $surface;
         color: $foreground;
     }
     
@@ -138,7 +143,7 @@ class SynapseTUI(App):
         height: 1fr;
     }
     Tabs {
-        background: #191715;
+        background: $surface;
         border-bottom: solid $panel;
         height: 3;
     }
@@ -150,16 +155,16 @@ class SynapseTUI(App):
     }
     Tab:hover {
         color: $foreground;
-        background: #26221e;
+        background: $panel;
     }
     Tab.-active {
         color: $foreground;
         text-style: bold;
-        background: #2c2722;
+        background: $panel;
         border-bottom: tall $primary;
     }
     Tabs:focus Tab.-active {
-        background: #352e27;
+        background: $panel;
     }
     Underline {
         display: none;
@@ -172,30 +177,30 @@ class SynapseTUI(App):
         border: round $panel;
     }
     DataTable > .datatable--header {
-        background: #191715;
-        color: #8c8273;
+        background: $surface;
+        color: $text-muted;
         text-style: bold;
         border-bottom: solid $panel;
     }
     DataTable > .datatable--cursor {
-        background: #332b24;
+        background: $panel;
         color: $foreground;
         text-style: bold;
     }
     DataTable:focus > .datatable--cursor {
-        background: #4a3b30;
+        background: $panel;
         color: $foreground;
         text-style: bold;
     }
     DataTable > .datatable--hover {
-        background: #24201c;
+        background: $panel;
     }
     
     /* Service Info panel */
     #service-info {
         height: auto;
         padding: 1;
-        background: #26221e;
+        background: $surface;
         margin-bottom: 1;
         border: round $panel;
     }
@@ -207,11 +212,11 @@ class SynapseTUI(App):
     /* Sleek Scrollbar */
     ScrollBar {
         background: transparent;
-        color: #38312a;
+        color: $panel;
     }
     ScrollBar > .scrollbar--thumb {
-        background: #473f36;
-        color: #473f36;
+        background: $panel;
+        color: $panel;
     }
     ScrollBar > .scrollbar--thumb:hover {
         background: $primary;
@@ -219,34 +224,41 @@ class SynapseTUI(App):
     }
     """
 
+    ENABLE_COMMAND_PALETTE = False
+
     BINDINGS = [
-        Binding("a", "add_target", "Add Target", priority=False),
-        Binding("i", "initial_recon", "Initial Recon", priority=False),
-        Binding("r", "run_recipe", "Run Recipe", priority=False),
-        Binding("n", "triage", "Triage (Next?)", priority=False),
-        Binding("s", "stuck_check", "I'm Stuck", priority=False),
-        Binding("o", "toggle_scope", "Scope Toggle", priority=False),
-        Binding("c", "add_cred", "Add Cred", priority=False),
-        Binding("t", "mark_cred_tested", "Mark Cred Tested", priority=False),
-        Binding("l", "add_lead", "Add Lead", priority=False),
-        Binding("e", "add_evidence", "Add Flag/Evidence", priority=False),
-        Binding("space", "toggle_status", "Toggle Status", priority=False),
-        Binding("x", "export_report", "Export Report", priority=False),
-        Binding("p", "select_profile", "Profile (P)", priority=False),
-        Binding("g", "guided_workflow", "Guide (G)", priority=False),
-        Binding("T", "select_theme", "Themes (T)", priority=False),
+        Binding("ctrl+k", "command_palette", "Palette", priority=False, show=True),
+        Binding("ctrl+p", "jump_to", "Jump", priority=False, show=True),
+        Binding("ctrl+l", "manage_workspaces", "Labs", priority=False, show=True),
+        Binding("r", "run_recipe", "Run/Recon", priority=False, show=True),
+        Binding("full_stop", "open_scratchpad", "Notes", priority=False, show=True),
+        Binding("period", "open_scratchpad", "Notes", priority=False, show=False),
+        Binding("T", "select_theme", "Themes", priority=False, show=True),
         Binding("ctrl+t", "select_theme", "Themes", show=False),
-        Binding("question_mark", "show_help", "Help (?)", priority=False),
+        Binding("question_mark", "show_help", "Help", priority=False, show=True),
         Binding("f1", "show_help", "Help (F1)", priority=False, show=False),
+        Binding("a", "add_target", "Add Target", priority=False, show=False),
+        Binding("i", "initial_recon", "Initial Recon", priority=False, show=False),
+        Binding("n", "triage", "Triage (Next?)", priority=False, show=False),
+        Binding("s", "stuck_check", "I'm Stuck", priority=False, show=False),
+        Binding("o", "toggle_scope", "Scope Toggle", priority=False, show=False),
+        Binding("c", "add_cred", "Add Cred", priority=False, show=False),
+        Binding("t", "mark_cred_tested", "Mark Cred Tested", priority=False, show=False),
+        Binding("l", "add_lead", "Add Lead", priority=False, show=False),
+        Binding("e", "add_evidence", "Add Flag/Evidence", priority=False, show=False),
+        Binding("space", "toggle_status", "Toggle Status", priority=False, show=False),
+        Binding("x", "export_report", "Export Report", priority=False, show=False),
+        Binding("p", "select_profile", "Profile (P)", priority=False, show=False),
+        Binding("g", "guided_workflow", "Guide (G)", priority=False, show=False),
         Binding("1", "switch_tab('tab-workbench')", "Workbench", show=False),
         Binding("2", "switch_tab('tab-creds')", "Creds", show=False),
         Binding("3", "switch_tab('tab-leads')", "Leads", show=False),
         Binding("4", "switch_tab('tab-evidence')", "Evidence", show=False),
         Binding("5", "switch_tab('tab-pivots')", "Pivots", show=False),
-        Binding("q", "quit", "Quit"),
+        Binding("q", "quit", "Quit", show=True),
     ]
 
-    def __init__(self, db_path: str | Path = ":memory:", repo: Optional[DatabaseRepository] = None, **kwargs):
+    def __init__(self, db_path: str | Path = ":memory:", repo: Optional[DatabaseRepository] = None, workspace: str = "default", **kwargs):
         super().__init__(**kwargs)
         # Unregister unwanted default themes (like dracula, light themes)
         for unwanted in ("dracula", "textual-light", "ansi-light", "solarized-light", "atom-one-light", "catppuccin-latte", "rose-pine-dawn"):
@@ -260,6 +272,7 @@ class SynapseTUI(App):
         self.register_theme(CLAUDISH_LIGHT_THEME)
         self.register_theme(SYNAPSE_THEME)
         self.theme = "claudish"
+        self.current_workspace = workspace
         self.active_profile = "ejptv2"
         self.repo = repo if repo is not None else DatabaseRepository(db_path)
         self.methodology = MethodologyEngine()
@@ -310,7 +323,8 @@ class SynapseTUI(App):
     def auto_select_first_service(self) -> None:
         """Populates the methodology checklist with the first discovered service on launch."""
         detail_widget = self.query_one("#service-detail", ServiceDetailWidget)
-        targets = self.repo.list_targets()
+        snap = self._load_snapshot()
+        targets = snap["targets"]
 
         if not targets:
             detail_widget.display_empty()
@@ -323,7 +337,7 @@ class SynapseTUI(App):
             detail_widget.display_service(first, first.services[0])
         else:
             self.selected_service = None
-            detail_widget.display_empty(f"Target {first.ip} has no open services recorded.")
+            detail_widget.display_target_360(first, snap["credentials"], snap["evidence"])
 
         tree = self.query_one("#target-tree", TargetTreeWidget)
         if tree.root.children:
@@ -448,7 +462,7 @@ class SynapseTUI(App):
                 detail_widget.display_service(first, first.services[0])
             else:
                 self.selected_service = None
-                detail_widget.display_empty(f"Target {first.ip} has no open services recorded.")
+                detail_widget.display_target_360(first, snap["credentials"], snap["evidence"])
 
     def refresh_active_view(self) -> None:
         """Fast-path refresh after mutations.
@@ -493,11 +507,9 @@ class SynapseTUI(App):
             target: Target = node_data["target"]
             self.selected_target = target
             self.selected_service = None
-            if target.services:
-                self.selected_service = target.services[0]
-                detail_widget.display_service(target, target.services[0])
-            else:
-                detail_widget.display_empty(f"Target {target.ip} has no open services recorded.")
+            snap = self._load_snapshot()
+            detail_widget.display_target_360(target, snap["credentials"], snap["evidence"])
+
 
     def action_switch_tab(self, tab_id: str) -> None:
         self.query_one("#tabs", TabbedContent).active = tab_id
@@ -643,6 +655,8 @@ class SynapseTUI(App):
                     command=chosen["command"],
                     title=f"Recon: {chosen['title']}",
                     context=f"Target [bold {TERRACOTTA}]{recon_target.ip}[/] · phase-0 discovery",
+                    repo=self.repo,
+                    target_id=recon_target.id,
                 ),
                 on_result,
             )
@@ -907,6 +921,10 @@ class SynapseTUI(App):
                     command=item.command_template,
                     title=f"Run: {item.title}",
                     context=svc_ctx,
+                    repo=self.repo,
+                    target_id=self.selected_target.id if self.selected_target else None,
+                    service_id=self.selected_service.id if self.selected_service else None,
+                    checklist_id=item.id,
                 ),
                 on_result,
             )
@@ -1006,6 +1024,18 @@ class SynapseTUI(App):
             return
         self.call_from_thread(self.notify, message, title="Export Success")
 
+    def action_export_report(self) -> None:
+        """Open the engagement report export modal."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def on_result(result: Optional[dict]) -> None:
+            if not result:
+                return
+            fmt = result["format"]
+            out_path = Path(result["output_path"]).expanduser().resolve()
+            self._run_export_worker(fmt, out_path)
+
         self.push_screen(ExportModal(), on_result)
 
     def action_select_theme(self) -> None:
@@ -1072,3 +1102,132 @@ class SynapseTUI(App):
             else {}
         )
         self.push_screen(GuidedPhaseModal(profile=profile, progress=progress, context=context))
+
+    def action_manage_workspaces(self) -> None:
+        """Opens the in-app workspace switcher and lab manager (Ctrl+L)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def _on_workspace_action(res: Optional[dict]) -> None:
+            if not res:
+                return
+            action = res.get("action")
+            if action == "switch":
+                ws_name = res["workspace"]
+                db_path = res["db_path"]
+                try:
+                    self.repo.close()
+                    self.repo = DatabaseRepository(db_path)
+                    self.current_workspace = ws_name
+                    self.selected_target = None
+                    self.selected_service = None
+                    self.refresh_all_views()
+                    self.notify(f"Switched to workspace: {ws_name}", title="Workspace Changed")
+                except Exception as e:
+                    self.notify(f"Failed to open workspace {ws_name}: {e}", severity="error")
+            elif action == "create":
+                ws_name = res["workspace"]
+                db_path = res["db_path"]
+                try:
+                    self.repo.close()
+                    self.repo = DatabaseRepository(db_path)
+                    self.current_workspace = ws_name
+                    self.selected_target = None
+                    self.selected_service = None
+                    self.refresh_all_views()
+                    self.notify(f"Created & active: {ws_name}", title="New Workspace")
+                except Exception as e:
+                    self.notify(f"Failed to create workspace {ws_name}: {e}", severity="error")
+            elif action == "clone":
+                src_name = res["source_workspace"]
+                tgt_name = res["target_workspace"]
+                src_path = Path.home() / ".synapse" / "workspaces" / f"{src_name}.db"
+                tgt_path = Path(res["db_path"])
+                try:
+                    if src_path.exists():
+                        shutil.copyfile(src_path, tgt_path)
+                    self.repo.close()
+                    self.repo = DatabaseRepository(tgt_path)
+                    self.current_workspace = tgt_name
+                    self.selected_target = None
+                    self.selected_service = None
+                    self.refresh_all_views()
+                    self.notify(f"Cloned {src_name} → {tgt_name}", title="Workspace Cloned")
+                except Exception as e:
+                    self.notify(f"Failed to clone workspace: {e}", severity="error")
+
+        self.push_screen(WorkspaceModal(current_workspace=getattr(self, "current_workspace", "default")), _on_workspace_action)
+
+    def action_command_palette(self) -> None:
+        """Opens the searchable Command Palette (Ctrl+K)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def _on_palette_action(action_id: Optional[str]) -> None:
+            if not action_id:
+                return
+            palette_map = {
+                "triage": self.action_triage,
+                "stuck": self.action_stuck_check,
+                "guided": self.action_guided_workflow,
+                "workspace": self.action_manage_workspaces,
+                "scratchpad": self.action_open_scratchpad,
+                "jump": self.action_jump_to,
+                "run_recipe": self.action_run_recipe,
+                "initial_recon": self.action_initial_recon,
+                "add_target": self.action_add_target,
+                "toggle_scope": self.action_toggle_scope,
+                "add_cred": self.action_add_cred,
+                "mark_cred": self.action_mark_cred_tested,
+                "add_lead": self.action_add_lead,
+                "add_evidence": self.action_add_evidence,
+                "export": self.action_export_report,
+                "profile": self.action_select_profile,
+                "theme": self.action_select_theme,
+                "tab_workbench": lambda: self.action_switch_tab("tab-workbench"),
+                "tab_creds": lambda: self.action_switch_tab("tab-creds"),
+                "tab_leads": lambda: self.action_switch_tab("tab-leads"),
+                "tab_evidence": lambda: self.action_switch_tab("tab-evidence"),
+                "tab_pivots": lambda: self.action_switch_tab("tab-pivots"),
+                "help": self.action_show_help,
+            }
+            handler = palette_map.get(action_id)
+            if handler:
+                handler()
+
+        self.push_screen(CommandPaletteModal(), _on_palette_action)
+
+    def action_jump_to(self) -> None:
+        """Opens the fuzzy Jump-To entity picker (Ctrl+P)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def _on_jump_target(payload: Optional[dict]) -> None:
+            if not payload:
+                return
+            ptype = payload.get("type")
+            if ptype == "target":
+                tgt: Target = payload["target"]
+                self.selected_target = tgt
+                self.selected_service = None
+                self.action_switch_tab("tab-workbench")
+                snap = self._load_snapshot()
+                self.query_one("#service-detail", ServiceDetailWidget).display_target_360(tgt, snap["credentials"], snap["evidence"])
+            elif ptype == "service":
+                tgt = payload["target"]
+                svc = payload["service"]
+                self.selected_target = tgt
+                self.selected_service = svc
+                self.action_switch_tab("tab-workbench")
+                self.query_one("#service-detail", ServiceDetailWidget).display_service(tgt, svc)
+            elif ptype == "tab":
+                self.action_switch_tab(payload["tab_id"])
+
+        self.push_screen(JumpModal(self.repo), _on_jump_target)
+
+    def action_open_scratchpad(self) -> None:
+        """Opens the persistent workspace markdown scratchpad (.)."""
+        if isinstance(self.screen, ModalScreen):
+            return
+        self.push_screen(ScratchpadModal(self.repo, getattr(self, "current_workspace", "default")))
+

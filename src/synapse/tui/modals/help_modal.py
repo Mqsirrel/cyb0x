@@ -27,14 +27,19 @@ class HelpModal(SynapseModal[None]):
 
     DEFAULT_CSS = """
     HelpModal #dialog {
-        width: 84;
+        width: 88%;
+        max-width: 96;
         height: auto;
-        max-height: 88%;
+        max-height: 85%;
+    }
+    HelpModal #modal-body {
+        height: 1fr;
     }
     #help-scroll {
-        height: auto;
+        height: 1fr;
         max-height: 100%;
         margin-top: 1;
+        overflow-y: auto;
     }
     """
 
@@ -59,8 +64,12 @@ class HelpModal(SynapseModal[None]):
             help_text.append(f"{key:<14}", style=TERRACOTTA)
             help_text.append(f"{desc}\n")
 
-        help_text.append("\nAssessment Workflow:\n", style=f"bold {KRAFT}")
+        help_text.append("\nAssessment Workflow & Power Tools:\n", style=f"bold {KRAFT}")
         workflow_rows = [
+            ("^K", "Open Command Palette (search and trigger all actions & tabs)"),
+            ("^P", "Fuzzy Jump to any Target, Port, Service, Credential, or Lead"),
+            ("^L", "Lab / Workspace Manager (Switch, Create, Clone attempts)"),
+            (".", "Open Workspace Scratchpad / Markdown Notes"),
             ("p", "Switch active methodology profile"),
             ("g", "Open Guided Workflow / Methodology phase breakdown"),
             ("n", "Open state-aware Triage: known vs unknown, and the highest-value next move"),

@@ -38,15 +38,24 @@ class GuidedPhaseModal(SynapseModal[None]):
 
     DEFAULT_CSS = """
     GuidedPhaseModal #dialog {
-        width: 100;
-        height: 35;
+        width: 88%;
+        max-width: 96;
+        height: auto;
+        max-height: 85%;
+    }
+    GuidedPhaseModal #modal-body {
+        height: 1fr;
+    }
+    TabbedContent {
+        height: 1fr;
     }
     .phase-stats {
         layout: horizontal;
-        height: 3;
+        height: auto;
+        min-height: 2;
         border-bottom: solid $panel;
         margin-bottom: 1;
-        padding-top: 1;
+        padding: 0;
     }
     .stat-box {
         width: 1fr;
@@ -54,7 +63,7 @@ class GuidedPhaseModal(SynapseModal[None]):
     }
     .phase-details {
         height: auto;
-        padding: 1;
+        padding: 0 1;
     }
     """
 

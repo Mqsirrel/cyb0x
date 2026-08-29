@@ -26,7 +26,16 @@ from synapse.tui.output_syntax import (
     HighlightResult,
     compute_output_highlight,
 )
-from synapse.tui.theme import BACKGROUND, CREAM, MUTED, SAGE, result_chips
+from synapse.tui.theme import (
+    BACKGROUND,
+    CREAM,
+    MUTED,
+    SAGE,
+    SURFACE,
+    SURFACE_RAISED,
+    TERRACOTTA,
+    result_chips,
+)
 
 
 class OutputArea(TextArea):
@@ -45,12 +54,12 @@ class OutputArea(TextArea):
         self.register_theme(
             TextAreaTheme(
                 name="synapse-output",
-                base_style=Style(color="#EDE6DA", bgcolor="#26221E"),
-                gutter_style=Style(color="#6B6259"),
-                cursor_style=Style(color="#211E1B", bgcolor="#D97757"),
-                cursor_line_style=Style(bgcolor="#2F2A25"),
+                base_style=Style(color=CREAM, bgcolor=SURFACE),
+                gutter_style=Style(color=MUTED),
+                cursor_style=Style(color=BACKGROUND, bgcolor=TERRACOTTA),
+                cursor_line_style=Style(bgcolor=SURFACE_RAISED),
                 selection_style=Style(bgcolor="#7A4A38"),
-                bracket_matching_style=Style(color="#D97757", bold=True),
+                bracket_matching_style=Style(color=TERRACOTTA, bold=True),
                 syntax_styles=dict(SYNTAX_STYLES),
             )
         )
@@ -98,15 +107,17 @@ class RunnerModal(SynapseModal[dict]):
 
     DEFAULT_CSS = """
     RunnerModal #dialog {
-        width: 85%;
-        height: 80%;
+        width: 88%;
+        max-width: 96;
+        height: auto;
+        max-height: 85%;
     }
     RunnerModal #modal-body {
         height: 1fr;
     }
     OutputArea {
         height: 1fr;
-        min-height: 8;
+        min-height: 5;
         border: round $panel;
     }
     #cmd-input {
@@ -129,12 +140,22 @@ class RunnerModal(SynapseModal[dict]):
         command: str,
         title: str = "Execute Command Recipe",
         context: Optional[str] = None,
+        repo=None,
+        target_id: Optional[int] = None,
+        service_id: Optional[int] = None,
+        checklist_id: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(title=f"EXECUTE — {title}", context=context, **kwargs)
         self.initial_command = command
         self.recipe_title = title
+        self.repo = repo
+        self.target_id = target_id
+        self.service_id = service_id
+        self.checklist_id = checklist_id
         self._run_in_flight = False
+        self.last_execution_result = None
+
 
     def compose_body(self) -> ComposeResult:
         yield Label("Command to execute (editable):", classes="field-label")
@@ -207,6 +228,23 @@ class RunnerModal(SynapseModal[dict]):
                 result_chips(res.return_code, res.duration_seconds, len(res.extracted_flags))
             )
             self.query_one("#btn-save", Button).disabled = False
+            self.last_execution_result = res
+
+            if self.repo is not None:
+                try:
+                    self.repo.log_command(
+                        command=cmd,
+                        return_code=res.return_code,
+                        stdout=res.stdout,
+                        stderr=res.stderr,
+                        duration_seconds=res.duration_seconds,
+                        extracted_flags=res.extracted_flags,
+                        target_id=self.target_id,
+                        service_id=self.service_id,
+                        checklist_id=self.checklist_id,
+                    )
+                except Exception:
+                    pass
         finally:
             spinner.add_class("hidden")
             self.query_one("#btn-run", Button).disabled = False

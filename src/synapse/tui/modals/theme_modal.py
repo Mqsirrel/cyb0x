@@ -11,7 +11,7 @@ from textual.widgets import Button, Label, OptionList
 from textual.widgets.option_list import Option
 
 from synapse.tui.modals.base import ModalButton, SynapseModal
-from synapse.tui.theme import TERRACOTTA, MUTED
+from synapse.tui.theme import MUTED, SAGE, TERRACOTTA
 
 
 THEME_CATALOG = [
@@ -36,12 +36,18 @@ class ThemeModal(SynapseModal[Optional[str]]):
 
     DEFAULT_CSS = """
     ThemeModal #dialog {
-        width: 76;
+        width: 88%;
+        max-width: 96;
         height: auto;
         max-height: 85%;
     }
+    ThemeModal #modal-body {
+        height: 1fr;
+    }
     #theme-list {
-        height: 14;
+        height: 1fr;
+        min-height: 6;
+        max-height: 10;
         margin-top: 1;
         border: round $panel;
         background: $surface;
@@ -68,7 +74,7 @@ class ThemeModal(SynapseModal[Optional[str]]):
         options = []
         initial_index = 0
         for idx, (t_id, t_title, t_desc) in enumerate(THEME_CATALOG):
-            active_marker = " [bold green]✔ ACTIVE[/]" if t_id == self.current_theme else ""
+            active_marker = f" [bold {SAGE}]✔ ACTIVE[/]" if t_id == self.current_theme else ""
             txt = Text.from_markup(f"[bold]{t_title}[/]{active_marker}\n  [dim]{t_desc}[/]")
             options.append(Option(txt, id=t_id))
             if t_id == self.current_theme:

@@ -18,19 +18,24 @@ class ProfileModal(SynapseModal[str]):
 
     DEFAULT_CSS = """
     ProfileModal #dialog {
-        width: 70;
+        width: 88%;
+        max-width: 96;
         height: auto;
+        max-height: 85%;
+    }
+    ProfileModal #modal-body {
+        height: 1fr;
     }
     #profile-list {
-        height: 8;
+        height: 4;
         border: solid $panel;
         margin-bottom: 1;
     }
     #profile-info {
-        height: 6;
+        height: 4;
         border: solid $panel;
         padding: 0 1;
-        background: #2a2520;
+        background: $surface;
     }
     """
 

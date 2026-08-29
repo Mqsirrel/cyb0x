@@ -179,3 +179,19 @@ class PivotRoute(BaseModel):
     notes: str = ""
     status: str = "active"
     created_at: datetime = Field(default_factory=_utcnow)
+
+
+class CommandRecord(BaseModel):
+    id: Optional[int] = None
+    target_id: Optional[int] = None
+    target_ip: Optional[str] = None
+    service_id: Optional[int] = None
+    checklist_id: Optional[int] = None
+    command: str
+    return_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    duration_seconds: float = 0.0
+    extracted_flags: List[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_utcnow)
+
