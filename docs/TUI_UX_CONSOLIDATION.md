@@ -865,3 +865,101 @@ WHAT CAN I DO NEXT?
 ```
 
 Everything else is secondary.
+
+---
+
+# Appendix A: Implementation Status Matrix & Rejection Register
+
+> Synthesizes `TUI_UX_PROPOSAL.md`, `CORE_SYSTEM_PROPOSAL_HONEST_REVIEW.md`, `EJPTV2_LAB_WORKSPACE_PROPOSAL.md`, and live implementation state as of v0.9.x.
+
+| Component / Proposal Idea | Source | Status | Value | Complexity | Verdict |
+|---|---|---|:---:|:---:|---|
+| Persistent Multi-Tab Workspace | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 10 | 4 | **Retained** |
+| Target 360° Operational Card | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 10 | 3 | **Retained** |
+| Searchable Command Palette (`Ctrl+K`) | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 10 | 3 | **Retained** |
+| Fuzzy Entity Jump (`Ctrl+P`) | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 9 | 3 | **Retained** |
+| In-App Lab / Workspace Switcher (`Ctrl+L`) | `EJPTV2_LAB_PROPOSAL` | **IMPLEMENTED** | 10 | 4 | **Retained** |
+| Persistent Markdown Scratchpad (`.`) | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 9 | 2 | **Retained** |
+| Persistent Command Execution Logging (v4) | `CORE_SYSTEM_PROPOSAL` | **IMPLEMENTED** | 10 | 3 | **Retained** |
+| Real-Time CTF/OffSec Flag Extraction | `CORE_SYSTEM_PROPOSAL` | **IMPLEMENTED** | 10 | 2 | **Retained** |
+| Deterministic Next-Action Triage (`n`) | `CORE_SYSTEM_PROPOSAL` | **IMPLEMENTED** | 10 | 4 | **Retained** |
+| Rabbit-Hole / "I'm Stuck" Detection (`s`) | `CORE_SYSTEM_PROPOSAL` | **IMPLEMENTED** | 9 | 3 | **Retained** |
+| Credential Lifecycle Cycling (`t`) | `EJPTV2_LAB_PROPOSAL` | **IMPLEMENTED** | 9 | 3 | **Retained** |
+| Environment Doctor CLI (`synapse doctor`) | `TUI_UX_PROPOSAL` | **IMPLEMENTED** | 9 | 2 | **Retained** |
+| *Top-Level "Engagement" Rename* | `CORE_SYSTEM_PROPOSAL` | **REJECTED** | 2 | 7 | Workspace model already covers this |
+| *Full Event Sourcing & Timeline Replay* | `CORE_SYSTEM_PROPOSAL` | **REJECTED** | 4 | 9 | Command logging + evidence timestamps suffice |
+| *AI-Only LLM Recommendation Copilot* | `CORE_SYSTEM_PROPOSAL` | **REJECTED** | 3 | 8 | Deterministic rules are faster, offline, zero-cost |
+| *Dynamic ASCII Network Topology Graph* | `TUI_UX_PROPOSAL` | **DEFERRED (v1.1)** | 6 | 7 | Pivot Sentinel tab meets current needs |
+
+---
+
+# Appendix B: Operational State Machine Diagrams
+
+### Target Lifecycle
+```text
+DISCOVERED (○) ──[Port Scan]──> ENUMERATED (●) ──[Exploit]──> FOOTHOLD (★) ──[Privesc]──> PWNED (✔)
+```
+
+### Checklist Item State
+```text
+TODO [?] ──[r: Execute]──> RUNNING [⟳] ──┬──> CHECKED [✔]
+                                          ├──> FINDING [⚡]
+                                          └──> DEAD_END [✖]
+```
+
+### Credential Testing Lifecycle
+```text
+UNTESTED (dim) ──[t: Cycle]──┬──> VALID ACCESS [green]
+                             └──> INVALID [red]
+```
+
+---
+
+# Appendix C: Theme & Palette Governance
+
+All UI elements must use canonical palette constants from `src/synapse/tui/theme.py`:
+
+```python
+BACKGROUND     = "#1E1B18"  # Dark charcoal base
+SURFACE_RAISED = "#26221E"  # Panel and card surface
+TERRACOTTA     = "#D97757"  # Primary accent & action focus
+SAGE           = "#8FA876"  # Success, pwned, confirmed valid access
+KRAFT          = "#C2B4A3"  # Secondary text & exploratory chips
+CREAM          = "#EDE6DA"  # Primary foreground text
+MUTED          = "#8C8275"  # Dimmed borders & inactive labels
+ERROR_RED      = "#E06C75"  # Critical findings & invalid auth
+```
+
+**Prohibition**: No hardcoded ANSI escapes or unmapped hex codes in widget render methods.
+
+---
+
+# Appendix D: Responsive Viewport Guidelines
+
+```text
+Compact  (80x24)  → Modal: width 70, height 20
+Standard (120x36) → Modal: width 96, height 30
+Wide     (160x45) → Modal: width 110, height 36
+```
+
+- `#stats-banner`: `height: 2` with `border-bottom: solid $panel`.
+- Footer key hints: max 78/80 cols on compact viewport; 8 universal power bindings visible.
+- Scrollable lists: `height: 1fr` or explicit max-heights inside dialog containers.
+
+---
+
+# Appendix E: Future Roadmap (v1.1+)
+
+- [ ] Dual-Pane Interactive Command Runner (split-terminal PTY alongside methodology tree)
+- [ ] Automated BloodHound / SharpHound JSON Ingestion into Credential Matrix & Pivot Sentinel
+- [ ] Custom Checklist YAML Editor (in-TUI modal for per-engagement methodology checks)
+- [ ] Subnet ASCII Topology Visualizer (reactive graph of pivot paths in Tab 5)
+
+---
+
+# Appendix F: Verification Record
+
+- **Schema**: Version 4 (forward migrations validated).
+- **Test Suite**: 173 passed, 2 skipped (`uv run pytest`).
+- **Modal Geometry**: Verified zero overflow on 80x24, 120x36, 160x45.
+- **Theme Scan**: 0 raw ANSI tags or hardcoded background hexes remaining.
