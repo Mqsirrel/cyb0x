@@ -80,7 +80,105 @@ The exact implementation should follow the existing Cyb0x architecture.
 
 ---
 
-# 2. Target-Centric Workspace
+# 2. Lab Selection & Lifecycle
+
+The **Lab should be the top-level workspace context** rather than merely another target field.
+
+On startup, provide a simple flow such as:
+
+```text
+╭──────────────────────────────╮
+│           CYB0X              │
+│                              │
+│  [1] Start New Lab           │
+│  [2] Open Lab                │
+│  [3] Recent Labs             │
+│  [4] Lab History             │
+│  [5] Settings                │
+╰──────────────────────────────╯
+```
+
+Starting a lab should be lightweight:
+
+```text
+Start New Lab
+────────────────────
+Name: eJPTv2 Lab 07
+Target / Scope: ____________
+
+[ Create ]
+```
+
+The user should be able to **switch between labs without restarting Cyb0x**.
+
+For example:
+
+```text
+Ctrl+L
+
+LABS
+────────────────────────────
+● eJPTv2 Lab 07    ← current
+  eJPTv2 Lab 08
+  eJPTv2 Lab 09
+  HTB Machine
+  Practice SMB
+────────────────────────────
+[New] [Open] [Rename] [Archive]
+```
+
+Switching labs should restore the complete state of that lab:
+
+- Targets/IPs
+- Hosts
+- Services
+- Commands + outputs
+- Notes
+- Credentials
+- Findings
+- Sessions
+- Pivot information
+- Evidence
+- Methodology state
+
+The user should be able to leave Lab 07, work on Lab 08, then return to Lab 07 and continue **exactly where they stopped**.
+
+### Recent Labs
+
+Provide a quick-access view for active/recent work:
+
+```text
+RECENT LABS
+
+● eJPTv2 — Network Pentest       12 min ago
+  4 hosts · 13 services
+
+  eJPTv2 — Web Pentest            Yesterday
+  2 hosts · 7 services
+
+  eJPTv2 — Pivoting               2 days ago
+  5 hosts · 2 networks
+```
+
+### Important distinction
+
+A **Lab is not a Target**.
+
+A lab can contain multiple targets:
+
+```text
+LAB
+└── Targets
+    ├── 10.10.10.10
+    ├── 10.10.10.20
+    └── 10.10.10.30
+```
+
+Do not create a new workspace every time a new host is discovered.
+
+---
+
+# 3. Target-Centric Workspace
 
 A tester should be able to select a target and immediately see **everything known about it**.
 
@@ -127,7 +225,7 @@ Avoid forcing the user to search through unrelated terminal output or files.
 
 ---
 
-# 3. Command Workspace
+# 4. Command Workspace
 
 Commands should be treated as persistent assessment objects rather than temporary terminal history.
 
@@ -169,7 +267,7 @@ Do not remove the ability to execute arbitrary custom commands.
 
 ---
 
-# 4. Re-run / Re-test Workflow
+# 5. Re-run / Re-test Workflow
 
 This is especially important for practical training.
 
@@ -194,7 +292,7 @@ This allows the tester to experiment without losing previous results.
 
 ---
 
-# 5. Lab Reset / Clone
+# 6. Lab Reset / Clone & Attempts
 
 Investigate adding a clean way to practice the same lab repeatedly.
 
@@ -229,9 +327,11 @@ Lab 07
 
 The implementation can use snapshots, cloned workspaces, or another architecture-appropriate mechanism.
 
+A reset should clear the appropriate working state while preserving historical attempts and allowing the user to start cleanly.
+
 ---
 
-# 6. Notes That Are Actually Useful
+# 7. Notes That Are Actually Useful
 
 Avoid one giant generic notes field.
 
@@ -273,7 +373,7 @@ Reuse the existing credential matrix where possible.
 
 ---
 
-# 7. Shell / Session Tracking
+# 8. Shell / Session Tracking
 
 Investigate whether shells/sessions can be represented persistently.
 
@@ -307,7 +407,7 @@ The purpose is to keep **assessment context** attached to the shell:
 
 ---
 
-# 8. Network-Level View
+# 9. Network-Level View
 
 eJPTv2-style labs can involve multiple hosts and internal networks.
 
@@ -336,7 +436,7 @@ The key requirement is that the tester can answer:
 
 ---
 
-# 9. Evidence Association
+# 10. Evidence Association
 
 Evidence should be associated with the thing it proves.
 
@@ -363,7 +463,7 @@ This makes final reporting much easier.
 
 ---
 
-# 10. Fast Navigation
+# 11. Fast Navigation
 
 The TUI should optimize for the actual workflow of a tester.
 
@@ -388,7 +488,7 @@ Keyboard-first interaction is one of Cyb0x's strengths and should remain central
 
 ---
 
-# 11. eJPTv2 Training Workflow
+# 12. eJPTv2 Training Workflow
 
 Do **not** hard-code a walkthrough for individual labs.
 
@@ -432,7 +532,7 @@ The workspace should simply make the process **easy to execute and remember**.
 
 ---
 
-# 12. Attempt History
+# 13. Attempt History
 
 Consider retaining a lightweight history of the user's work.
 
@@ -471,7 +571,7 @@ Keep this optional and lightweight.
 
 ---
 
-# 13. "I'm Stuck" Should Remain State-Aware
+# 14. "I'm Stuck" Should Remain State-Aware
 
 The existing `s` functionality is valuable.
 
@@ -497,30 +597,32 @@ Suggestions should come from **known assessment state**, not generic "try these 
 
 ---
 
-# 14. Avoid Feature Bloat
+# 15. Avoid Feature Bloat
 
 Do NOT add features simply because they exist in other pentesting tools.
 
 Prioritize:
 
-1. Fast target entry
-2. Persistent command execution/history
-3. Target/service organization
-4. Notes
-5. Findings
-6. Credentials
-7. Sessions
-8. Pivot/network context
-9. Evidence
-10. Re-run
-11. Lab reset/clone
-12. Export
+1. Lab creation/opening/switching
+2. Fast target entry
+3. Persistent command execution/history
+4. Target/service organization
+5. Notes
+6. Findings
+7. Credentials
+8. Sessions
+9. Pivot/network context
+10. Evidence
+11. Re-run
+12. Lab reset/clone
+13. Attempt history
+14. Export
 
 Everything else should be evaluated based on whether it improves the actual lab workflow.
 
 ---
 
-# 15. UX Principle
+# 16. UX Principle
 
 The tester should feel:
 
@@ -528,14 +630,14 @@ The tester should feel:
 
 Not:
 
-> "I need to maintain Cyb0x plus a separate notes file plus several terminals."
+> "I need to maintain Cyb0x plus a separate note-taking system plus several terminals."
 
 The ideal experience:
 
 ```text
 Open Cyb0x
     ↓
-Create Lab
+Choose existing lab / Start new lab
     ↓
 Enter IP
     ↓
@@ -543,9 +645,9 @@ Work
     ↓
 Everything is automatically organized
     ↓
-Close Cyb0x
+Switch labs whenever needed
     ↓
-Come back tomorrow
+Return later
     ↓
 Everything is still there
     ↓
@@ -554,7 +656,7 @@ Continue exactly where you stopped
 
 ---
 
-# 16. Review Before Implementation
+# 17. Review Before Implementation
 
 Before changing code, produce a short audit:
 
@@ -563,6 +665,7 @@ EXISTING
 ────────
 Feature                     Status
 Lab workspace               ?
+Lab selection/switching     ?
 Target tracking             ?
 Command history             ?
 Re-run                      ?
@@ -573,6 +676,7 @@ Pivot tracking              ?
 Evidence                    ?
 Export                      ?
 Reset/clone                 ?
+Attempt history             ?
 
 MISSING
 ───────
@@ -602,6 +706,8 @@ Do not add an eJPT tutorial.
 A successful implementation should allow a user to take an arbitrary eJPTv2 lab and comfortably do:
 
 ```text
+Choose / create Lab
+      ↓
 Target entry
       ↓
 Recon
@@ -631,6 +737,20 @@ Repeat
 Evidence
       ↓
 Export
+```
+
+The user should also be able to:
+
+```text
+Lab A
+ ↓
+Switch to Lab B
+ ↓
+Work on Lab B
+ ↓
+Switch back to Lab A
+ ↓
+Resume exactly where they stopped
 ```
 
 **without needing a separate note-taking system for the assessment.**
