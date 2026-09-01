@@ -43,6 +43,7 @@ class ChecklistStatus(str, Enum):
     CHECKED = "checked"
     FINDING = "finding"
     DEAD_END = "dead_end"
+    DEFERRED = "deferred"
 
 
 class LeadPriority(str, Enum):

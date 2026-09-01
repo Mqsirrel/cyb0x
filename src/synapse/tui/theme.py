@@ -96,6 +96,7 @@ CHECKLIST_CHIP: dict[ChecklistStatus, str] = {
     ChecklistStatus.CHECKED: f"[bold {BACKGROUND} on {SAGE}] ✔ CHECKED  [/]",
     ChecklistStatus.FINDING: f"[bold {CREAM} on {ERROR_RED}] ★ FINDING  [/]",
     ChecklistStatus.DEAD_END: f"[dim {MUTED} on {SURFACE_RAISED}] ✖ DEAD-END [/]",
+    ChecklistStatus.DEFERRED: f"[dim {KRAFT} on {SURFACE_RAISED}] ↷ DEFERRED [/]",
 }
 
 LEAD_PRIORITY_CHIP: dict[LeadPriority, str] = {

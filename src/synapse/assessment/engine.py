@@ -113,6 +113,7 @@ class TargetSnapshot:
     checks_done: int = 0
     checks_finding: int = 0
     checks_dead_end: int = 0
+    checks_deferred: int = 0
 
     evidence_count: int = 0
     flag_count: int = 0
@@ -120,10 +121,10 @@ class TargetSnapshot:
 
     @property
     def coverage(self) -> float:
-        """Fraction of checklist items resolved (done/finding/dead-end) or 1.0 when nothing planned."""
+        """Fraction of checklist items resolved (done/finding/dead-end/deferred) or 1.0 when nothing planned."""
         if self.checks_total == 0:
             return 1.0
-        resolved = self.checks_done + self.checks_finding + self.checks_dead_end
+        resolved = self.checks_done + self.checks_finding + self.checks_dead_end + self.checks_deferred
         return resolved / self.checks_total
 
     @property
@@ -184,6 +185,7 @@ class PhaseProgress:
     running_checks: list[str] = field(default_factory=list)
     dead_ends: list[str] = field(default_factory=list)
     findings: list[str] = field(default_factory=list)
+    deferred_checks: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     recommended_actions: list[NextAction] = field(default_factory=list)
     phase_status: PhaseStatus = PhaseStatus.NOT_STARTED
@@ -197,11 +199,17 @@ class PhaseProgress:
             + len(self.running_checks)
             + len(self.dead_ends)
             + len(self.findings)
+            + len(self.deferred_checks)
         )
 
     @property
     def resolved_checks(self) -> int:
-        return len(self.completed_checks) + len(self.findings) + len(self.dead_ends)
+        return (
+            len(self.completed_checks)
+            + len(self.findings)
+            + len(self.dead_ends)
+            + len(self.deferred_checks)
+        )
 
     @property
     def completion_ratio(self) -> float:
@@ -287,6 +295,8 @@ def build_snapshots(targets: list[Target], evidence_by_target: dict[int, int] | 
                     snap.checks_finding += 1
                 elif chk.status == ChecklistStatus.DEAD_END:
                     snap.checks_dead_end += 1
+                elif chk.status == ChecklistStatus.DEFERRED:
+                    snap.checks_deferred += 1
 
         snaps[t.ip] = snap
     return snaps
@@ -444,21 +454,52 @@ def get_next_actions(
         todo_checks = sum(1 for s in t.services for c in s.checklists if c.status == ChecklistStatus.TODO)
         if pending:
             port_str = ",".join(str(p) for p in pending[:6]) + ("…" if len(pending) > 6 else "")
+            cat_weights = {"recon": 0, "enum": 1, "vuln_check": 2, "exploit": 3, "privesc": 4}
+            candidate_checks = [
+                (cat_weights.get(c.category.lower(), 10), c, s)
+                for s in t.services
+                if s.port in pending
+                for c in s.checklists
+                if c.status == ChecklistStatus.TODO
+            ]
+            check_hint = ""
+            rationale_extra = ""
+            if candidate_checks:
+                candidate_checks.sort(key=lambda x: (x[0], x[1].id or 0))
+                best_chk = candidate_checks[0][1]
+                best_svc = candidate_checks[0][2]
+                check_hint = f" — next: '{best_chk.title}'"
+                rationale_extra = f" Start with '{best_chk.title}' on port {best_svc.port}."
+
             actions.append(
                 NextAction(
                     priority=PRIORITY_ENUM,
                     kind="enum",
-                    title=f"Enumerate untested service(s) on {t.ip}: port {port_str}",
-                    rationale=f"{len(pending)} open service(s) never touched; {todo_checks} recipe check(s) pending.",
+                    title=f"Enumerate untested service(s) on {t.ip}: port {port_str}{check_hint}",
+                    rationale=f"{len(pending)} open service(s) never touched; {todo_checks} recipe check(s) pending.{rationale_extra}",
                     target_ip=t.ip,
                 )
             )
         elif snap.checks_todo and not snap.checks_running:
+            cat_weights = {"recon": 0, "enum": 1, "vuln_check": 2, "exploit": 3, "privesc": 4}
+            candidate_checks = [
+                (cat_weights.get(c.category.lower(), 10), c, s)
+                for s in t.services
+                for c in s.checklists
+                if c.status == ChecklistStatus.TODO
+            ]
+            check_hint = ""
+            if candidate_checks:
+                candidate_checks.sort(key=lambda x: (x[0], x[1].id or 0))
+                best_chk = candidate_checks[0][1]
+                best_svc = candidate_checks[0][2]
+                check_hint = f" — next: '{best_chk.title}' on :{best_svc.port}"
+
             actions.append(
                 NextAction(
                     priority=PRIORITY_RESUME,
                     kind="resume",
-                    title=f"Work through {snap.checks_todo} remaining check(s) on {t.ip}",
+                    title=f"Work through {snap.checks_todo} remaining check(s) on {t.ip}{check_hint}",
                     rationale="All services touched but methodology coverage is incomplete.",
                     target_ip=t.ip,
                 )
@@ -715,6 +756,8 @@ def evaluate_phase_progress(
                 )
             elif chk.status == ChecklistStatus.DEAD_END:
                 prog.dead_ends.append(chk.title)
+            elif chk.status == ChecklistStatus.DEFERRED:
+                prog.deferred_checks.append(chk.title)
 
     # Index captured evidence by proof type.
     evidence_by_type: dict[str, list[str]] = defaultdict(list)

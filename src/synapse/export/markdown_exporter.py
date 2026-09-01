@@ -183,6 +183,8 @@ def export_markdown_report(
                                 ])
                         elif item.status.value == "checked":
                             lines.append(f"- `[✓]` {item.title}")
+                        elif item.status.value == "deferred":
+                            lines.append(f"- `[↷]` *{item.title} (Deferred)*")
                     lines.append("")
         else:
             lines.extend(["*No open services recorded for this target.*", ""])
@@ -283,9 +285,10 @@ def export_obsidian_vault(repo: DatabaseRepository, output_dir: Path) -> Path:
                 f"### Port {svc.port}/{svc.protocol} - {svc.name} ({svc.product} {svc.version})"
             )
             for c in svc.checklists:
-                mark = "[x]" if c.status.value in ("checked", "finding") else "[ ]"
+                mark = "[x]" if c.status.value in ("checked", "finding") else ("[-]" if c.status.value == "deferred" else "[ ]")
                 finding_tag = " **[FINDING]**" if c.status.value == "finding" else ""
-                target_lines.append(f"- {mark} {c.title}{finding_tag}")
+                deferred_tag = " *(Deferred)*" if c.status.value == "deferred" else ""
+                target_lines.append(f"- {mark} {c.title}{finding_tag}{deferred_tag}")
                 if c.command_template:
                     target_lines.append(f"  - Recipe: `{c.command_template}`")
                 if c.output_snippet:

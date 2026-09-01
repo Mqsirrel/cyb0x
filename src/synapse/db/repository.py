@@ -431,7 +431,7 @@ class DatabaseRepository:
             new_status = ServiceStatus.IN_PROGRESS
         elif statuses <= {ChecklistStatus.DEAD_END}:
             new_status = ServiceStatus.DEAD_END
-        elif statuses <= {ChecklistStatus.CHECKED, ChecklistStatus.FINDING, ChecklistStatus.DEAD_END}:
+        elif statuses <= {ChecklistStatus.CHECKED, ChecklistStatus.FINDING, ChecklistStatus.DEAD_END, ChecklistStatus.DEFERRED}:
             new_status = ServiceStatus.ENUMERATED
         else:
             return service

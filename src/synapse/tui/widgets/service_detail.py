@@ -44,14 +44,16 @@ class ServiceDetailWidget(Vertical):
         if total:
             done = sum(1 for c in service.checklists if c.status in (ChecklistStatus.CHECKED, ChecklistStatus.FINDING))
             dead = sum(1 for c in service.checklists if c.status == ChecklistStatus.DEAD_END)
+            deferred = sum(1 for c in service.checklists if c.status == ChecklistStatus.DEFERRED)
             todo = sum(1 for c in service.checklists if c.status == ChecklistStatus.TODO)
-            pct = int(round((done + dead) / total * 100))
+            pct = int(round((done + dead + deferred) / total * 100))
             ev_count = self.evidence_counts.get(service.id, 0)
             ev_part = f" │ [bold]Evidence:[/bold] {ev_count} linked"
+            defer_part = f" │ [bold]Deferred:[/bold] {deferred}" if deferred else ""
             return (
-                f"[bold]Coverage:[/bold] {done + dead}/{total} ({pct}%)"
+                f"[bold]Coverage:[/bold] {done + dead + deferred}/{total} ({pct}%)"
                 f" │ [bold]Pending:[/bold] {todo}"
-                f" │ [bold]Dead-ends:[/bold] {dead}{ev_part}\n"
+                f" │ [bold]Dead-ends:[/bold] {dead}{defer_part}{ev_part}\n"
             )
         return f"[{MUTED}]No methodology checks — run initial recon ('i') or re-ingest scan data.[/]\n"
 
@@ -89,7 +91,12 @@ class ServiceDetailWidget(Vertical):
         prev_cursor = capture_cursor(table)
         table.clear()
 
-        for item in service.checklists:
+        CATEGORY_ORDER = {"recon": 0, "enum": 1, "vuln_check": 2, "exploit": 3, "privesc": 4}
+        ordered_checklists = sorted(
+            service.checklists,
+            key=lambda c: (CATEGORY_ORDER.get(c.category.lower(), 10), c.id or 0),
+        )
+        for item in ordered_checklists:
             st = checklist_chip(item.status)
             cmd_preview = item.command_template if len(item.command_template) <= 55 else item.command_template[:52] + "..."
             table.add_row(
@@ -118,7 +125,7 @@ class ServiceDetailWidget(Vertical):
 
         total_svcs = len(target.services)
         total_checks = sum(len(s.checklists) for s in target.services)
-        done_checks = sum(sum(1 for c in s.checklists if c.status.value in ("checked", "finding", "dead_end")) for s in target.services)
+        done_checks = sum(sum(1 for c in s.checklists if c.status.value in ("checked", "finding", "dead_end", "deferred")) for s in target.services)
         findings_count = sum(sum(1 for c in s.checklists if c.status.value == "finding") for s in target.services)
 
         # Target-linked credentials

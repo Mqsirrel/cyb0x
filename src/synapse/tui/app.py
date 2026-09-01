@@ -247,6 +247,7 @@ class SynapseTUI(App):
         Binding("l", "add_lead", "Add Lead", priority=False, show=False),
         Binding("e", "add_evidence", "Add Flag/Evidence", priority=False, show=False),
         Binding("space", "toggle_status", "Toggle Status", priority=False, show=False),
+        Binding("d", "defer_status", "Defer (D)", priority=False, show=False),
         Binding("x", "export_report", "Export Report", priority=False, show=False),
         Binding("p", "select_profile", "Profile (P)", priority=False, show=False),
         Binding("g", "guided_workflow", "Guide (G)", priority=False, show=False),
@@ -946,13 +947,14 @@ class SynapseTUI(App):
                 if not item:
                     return
 
-                # Cycle: TODO -> RUNNING -> CHECKED -> FINDING -> DEAD_END -> TODO
+                # Cycle: TODO -> RUNNING -> CHECKED -> FINDING -> DEAD_END -> DEFERRED -> TODO
                 cycle_map = {
                     ChecklistStatus.TODO: ChecklistStatus.RUNNING,
                     ChecklistStatus.RUNNING: ChecklistStatus.CHECKED,
                     ChecklistStatus.CHECKED: ChecklistStatus.FINDING,
                     ChecklistStatus.FINDING: ChecklistStatus.DEAD_END,
-                    ChecklistStatus.DEAD_END: ChecklistStatus.TODO,
+                    ChecklistStatus.DEAD_END: ChecklistStatus.DEFERRED,
+                    ChecklistStatus.DEFERRED: ChecklistStatus.TODO,
                 }
                 new_status = cycle_map.get(item.status, ChecklistStatus.CHECKED)
                 self.repo.update_checklist_status(item.id, new_status)  # type: ignore
@@ -996,6 +998,29 @@ class SynapseTUI(App):
                 self.refresh_active_view()
             except Exception as e:
                 self.notify(f"Could not update lead status: {e}", severity="error")
+
+    def action_defer_status(self) -> None:
+        """Toggles DEFERRED status directly on the highlighted checklist item."""
+        tabs = self.query_one("#main-tabs", TabbedContent)
+        if tabs.active == "tab-workbench":
+            table = self.query_one("#checklist-table", DataTable)
+            if table.row_count == 0 or table.cursor_row is None:
+                return
+            row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key.value
+            try:
+                item_id = int(row_key)
+                item = self.repo.get_checklist_by_id(item_id)
+                if not item:
+                    return
+                new_status = ChecklistStatus.TODO if item.status == ChecklistStatus.DEFERRED else ChecklistStatus.DEFERRED
+                self.repo.update_checklist_status(item.id, new_status)  # type: ignore
+                self.selected_service = self._refresh_service_state(self.selected_service)
+                self.refresh_active_view()
+                if self.selected_target and self.selected_service:
+                    self.query_one("#service-detail", ServiceDetailWidget).display_service(self.selected_target, self.selected_service)
+                self.notify(f"Check {'un-deferred' if new_status == ChecklistStatus.TODO else 'deferred'}: {item.title}", severity="information")
+            except Exception as e:
+                self.notify(f"Could not defer check: {e}", severity="error")
 
     @work(thread=True, exclusive=True, group="export")
     def _run_export_worker(self, fmt: str, out_path: Path) -> None:

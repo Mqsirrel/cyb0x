@@ -244,13 +244,13 @@ async def test_theme_switching_during_tab_navigation():
 def test_binding_registry_metadata():
     """Empirically inspect SynapseTUI.BINDINGS for exact counts and show flags."""
     bindings = SynapseTUI.BINDINGS
-    assert len(bindings) == 29, f"Expected 29 total bindings, found {len(bindings)}"
+    assert len(bindings) == 30, f"Expected 30 total bindings, found {len(bindings)}"
 
     shown = [b for b in bindings if b.show is True]
     hidden = [b for b in bindings if b.show is False]
 
     assert len(shown) == 8, f"Expected 8 shown bindings, found {len(shown)}: {[b.key for b in shown]}"
-    assert len(hidden) == 21, f"Expected 21 hidden bindings, found {len(hidden)}: {[b.key for b in hidden]}"
+    assert len(hidden) == 22, f"Expected 22 hidden bindings, found {len(hidden)}: {[b.key for b in hidden]}"
 
     expected_shown_keys = {"ctrl+k", "ctrl+p", "ctrl+l", "r", "full_stop", "T", "question_mark", "q"}
     actual_shown_keys = {b.key for b in shown}
