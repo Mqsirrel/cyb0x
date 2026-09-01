@@ -46,7 +46,7 @@ def get_default_db_path(workspace: str = "default") -> Path:
 @click.option("--db", "db_path", type=click.Path(), default=None, help="Custom SQLite DB path")
 @click.pass_context
 def main(ctx: click.Context, workspace: str, db_path: Optional[str]) -> None:
-    """SYNAPSE: Terminal Pentest Assessment State Machine & Methodology Copilot."""
+    """CYB0X: Terminal Pentest Assessment State Machine & Methodology Copilot."""
     if db_path:
         ctx.obj = {"repo": DatabaseRepository(db_path), "workspace": workspace, "db_path": db_path}
     else:

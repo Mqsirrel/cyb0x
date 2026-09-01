@@ -1,10 +1,10 @@
 [project]
-name = "synapse"
+name = "cyb0x"
 version = "0.1.0"
-description = "Terminal Pentest Assessment State Machine & Methodology Copilot for eJPT, OSCP, CTFs, and Labs"
+description = "CYB0X: Terminal Pentest Assessment State Machine & Methodology Copilot for eJPT, OSCP, CTFs, and Labs"
 readme = "README.md"
 authors = [
-    { name = "Synapse Developers", email = "security@synapse.local" }
+    { name = "CYB0X Developers", email = "security@cyb0x.local" }
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -17,6 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
+cyb0x = "synapse.cli:main"
+cybox = "synapse.cli:main"
 synapse = "synapse.cli:main"
 syn = "synapse.cli:main"
 

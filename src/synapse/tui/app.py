@@ -87,7 +87,7 @@ for _unwanted in ("dracula", "textual-light", "ansi-light", "solarized-light", "
 class SynapseTUI(App):
     """The terminal penetration testing assessment state machine and methodology copilot."""
 
-    TITLE = "SYNAPSE // Offensive Assessment State Machine & Methodology Copilot"
+    TITLE = "CYB0X // Offensive Assessment State Machine & Methodology Copilot"
     SUB_TITLE = "eJPTv2 • OSCP • CTFs • Authorized Labs"
     CSS = """
     Screen {

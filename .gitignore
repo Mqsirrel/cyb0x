@@ -9,3 +9,6 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+cyb0x-s/
+taibah-dashboard-extension/
+research_lab/
